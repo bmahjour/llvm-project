@@ -295,6 +295,7 @@ public:
   /// that there is a memory dependence between the given two nodes.
   const std::string getDependenceString(const NodeType &Src,
                                         const NodeType &Dst) const;
+
 protected:
   // Name of the graph.
   std::string Name;
@@ -472,20 +473,20 @@ template <typename NodeType>
 const std::string
 DependenceGraphInfo<NodeType>::getDependenceString(const NodeType &Src,
                                                    const NodeType &Dst) const {
-  std::string Str("");
+  std::string Str;
   raw_string_ostream OS(Str);
   DependenceList Deps;
   if (!getDependencies(Src, Dst, Deps))
     return OS.str();
-  unsigned count = 0;
-  for (auto &D : Deps) {
-    D->dump(OS);
-    // Remove the extra new-line character printed by the dump method
-    if (OS.str().back() == '\n')
-      OS.str().pop_back();
-    if (++count < Deps.size())
-      OS << ", ";
-  }
+  interleave(
+      Deps.begin(), Deps.end(),
+      [&](std::unique_ptr<Dependence> &D) {
+        D->dump(OS);
+        // Remove the extra new-line character printed by the dump method
+        if (OS.str().back() == '\n')
+          OS.str().pop_back();
+      },
+      [&] { OS << ", "; });
   return OS.str();
 }
 

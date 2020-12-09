@@ -74,7 +74,8 @@ std::string DDGDotGraphTraits::getEdgeAttributes(
     return getVerboseEdgeAttributes(Node, E, G);
 }
 
-bool DDGDotGraphTraits::isNodeHidden(const DDGNode *Node) {
+bool DDGDotGraphTraits::isNodeHidden(const DDGNode *Node,
+                                     const DataDependenceGraph *Graph) {
   if (isSimple() && isa<RootDDGNode>(Node))
     return true;
   assert(Graph && "expected a valid graph pointer");
@@ -111,10 +112,12 @@ DDGDotGraphTraits::getVerboseNodeLabel(const DDGNode *Node,
   else if (isa<PiBlockDDGNode>(Node)) {
     OS << "--- start of nodes in pi-block ---\n";
     unsigned Count = 0;
-    auto &PNodes = cast<PiBlockDDGNode>(Node)->getNodes();
-    for (auto *PN : PNodes)
-      OS << getVerboseNodeLabel(PN, G)
-         << (++Count == PNodes.size() ? "" : "\n");
+    const auto &PNodes = cast<PiBlockDDGNode>(Node)->getNodes();
+    for (auto *PN : PNodes) {
+      OS << getVerboseNodeLabel(PN, G);
+      if (++Count != PNodes.size())
+        OS << "\n";
+    }
     OS << "--- end of nodes in pi-block ---\n";
   } else if (isa<RootDDGNode>(Node))
     OS << "root\n";

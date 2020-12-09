@@ -18,6 +18,7 @@
 #include "llvm/Analysis/DDG.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/DOTGraphTraits.h"
+
 namespace llvm {
 
 //===--------------------------------------------------------------------===//
@@ -36,13 +37,12 @@ template <>
 struct DOTGraphTraits<const DataDependenceGraph *>
     : public DefaultDOTGraphTraits {
 
-  DOTGraphTraits(bool isSimple = false)
-      : DefaultDOTGraphTraits(isSimple), Graph(nullptr) {}
+  DOTGraphTraits(bool IsSimple = false)
+      : DefaultDOTGraphTraits(IsSimple) {}
 
   /// Generate a title for the graph in DOT format
   std::string getGraphName(const DataDependenceGraph *G) {
     assert(G && "expected a valid pointer to the graph.");
-    Graph = G;
     return "DDG for '" + std::string(G->getName()) + "'";
   }
 
@@ -61,7 +61,7 @@ struct DOTGraphTraits<const DataDependenceGraph *>
 
   /// Do not print nodes that are part of a pi-block separately. They
   /// will be printed when their containing pi-block is being printed.
-  bool isNodeHidden(const DDGNode *Node);
+  bool isNodeHidden(const DDGNode *Node, const DataDependenceGraph *G);
 
 private:
   /// Print a DDG node in concise form.
@@ -83,13 +83,6 @@ private:
   static std::string getVerboseEdgeAttributes(const DDGNode *Src,
                                               const DDGEdge *Edge,
                                               const DataDependenceGraph *G);
-
-  /// Cache a pointer to the graph upon being invoked by the GrapthWriter so
-  /// we can access the graph without passing it in as argument to functions
-  /// such as isNodeHidden().
-  /// FIXME: this can be avoided by changing the isNodeHidden interface to
-  /// also take in a graph pointer.
-  const DataDependenceGraph *Graph = nullptr;
 };
 
 using DDGDotGraphTraits = struct DOTGraphTraits<const DataDependenceGraph *>;
