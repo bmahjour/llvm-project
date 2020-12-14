@@ -84,7 +84,7 @@ private:
                                               const DataDependenceGraph *G);
 };
 
-using DDGDotGraphTraits = struct DOTGraphTraits<const DataDependenceGraph *>;
+using DDGDotGraphTraits = DOTGraphTraits<const DataDependenceGraph *>;
 
 } // namespace llvm
 
