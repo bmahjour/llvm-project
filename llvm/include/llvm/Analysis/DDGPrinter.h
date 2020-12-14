@@ -37,8 +37,7 @@ template <>
 struct DOTGraphTraits<const DataDependenceGraph *>
     : public DefaultDOTGraphTraits {
 
-  DOTGraphTraits(bool IsSimple = false)
-      : DefaultDOTGraphTraits(IsSimple) {}
+  DOTGraphTraits(bool IsSimple = false) : DefaultDOTGraphTraits(IsSimple) {}
 
   /// Generate a title for the graph in DOT format
   std::string getGraphName(const DataDependenceGraph *G) {

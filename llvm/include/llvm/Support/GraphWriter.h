@@ -158,9 +158,7 @@ public:
         writeNode(Node);
   }
 
-  bool isNodeHidden(NodeRef Node) {
-    return DTraits.isNodeHidden(Node, G);
-  }
+  bool isNodeHidden(NodeRef Node) { return DTraits.isNodeHidden(Node, G); }
 
   void writeNode(NodeRef Node) {
     std::string NodeAttributes = DTraits.getNodeAttributes(Node, G);

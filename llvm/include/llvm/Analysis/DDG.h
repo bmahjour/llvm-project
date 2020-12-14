@@ -478,15 +478,14 @@ DependenceGraphInfo<NodeType>::getDependenceString(const NodeType &Src,
   DependenceList Deps;
   if (!getDependencies(Src, Dst, Deps))
     return OS.str();
-  interleave(
-      Deps.begin(), Deps.end(),
-      [&](std::unique_ptr<Dependence> &D) {
-        D->dump(OS);
-        // Remove the extra new-line character printed by the dump method
-        if (OS.str().back() == '\n')
-          OS.str().pop_back();
-      },
-      [&] { OS << ", "; });
+  interleaveComma(Deps, OS, [&](const std::unique_ptr<Dependence> &D) {
+    D->dump(OS);
+    // Remove the extra new-line character printed by the dump
+    // method
+    if (OS.str().back() == '\n')
+      OS.str().pop_back();
+  });
+
   return OS.str();
 }
 
