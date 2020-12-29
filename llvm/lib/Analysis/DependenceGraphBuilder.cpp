@@ -140,25 +140,25 @@ template <class G> void AbstractDependenceGraphBuilder<G>::createPiBlocks() {
       if (*N == PiNode || NodesInSCC.count(N))
         continue;
 
+      enum Direction {
+        Incoming,      // Incoming edges to the SCC
+        Outgoing,      // Edges going ot of the SCC
+        DirectionCount // To make the enum usable as an array index.
+      };
+
+      // Use these flags to help us avoid creating redundant edges. If there
+      // are more than one edges from an outside node to inside nodes, we only
+      // keep one edge from that node to the pi-block node. Similarly, if
+      // there are more than one edges from inside nodes to an outside node,
+      // we only keep one edge from the pi-block node to the outside node.
+      // There is a flag defined for each direction (incoming vs outgoing) and
+      // for each type of edge supported, using a two-dimensional boolean
+      // array.
+      using EdgeKind = typename EdgeType::EdgeKind;
+      EnumeratedArray<bool, EdgeKind> EdgeAlreadyCreated[DirectionCount]{false,
+                                                                         false};
+
       for (NodeType *SCCNode : NL) {
-
-        enum Direction {
-          Incoming,      // Incoming edges to the SCC
-          Outgoing,      // Edges going ot of the SCC
-          DirectionCount // To make the enum usable as an array index.
-        };
-
-        // Use these flags to help us avoid creating redundant edges. If there
-        // are more than one edges from an outside node to inside nodes, we only
-        // keep one edge from that node to the pi-block node. Similarly, if
-        // there are more than one edges from inside nodes to an outside node,
-        // we only keep one edge from the pi-block node to the outside node.
-        // There is a flag defined for each direction (incoming vs outgoing) and
-        // for each type of edge supported, using a two-dimensional boolean
-        // array.
-        using EdgeKind = typename EdgeType::EdgeKind;
-        EnumeratedArray<bool, EdgeKind> EdgeAlreadyCreated[DirectionCount]{
-            false, false};
 
         auto createEdgeOfKind = [this](NodeType &Src, NodeType &Dst,
                                        const EdgeKind K) {
