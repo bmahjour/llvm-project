@@ -158,57 +158,56 @@ template <class G> void AbstractDependenceGraphBuilder<G>::createPiBlocks() {
       EnumeratedArray<bool, EdgeKind> EdgeAlreadyCreated[DirectionCount]{false,
                                                                          false};
 
-      for (NodeType *SCCNode : NL) {
+      auto createEdgeOfKind = [this](NodeType &Src, NodeType &Dst,
+                                     const EdgeKind K) {
+        switch (K) {
+        case EdgeKind::RegisterDefUse:
+          createDefUseEdge(Src, Dst);
+          break;
+        case EdgeKind::MemoryDependence:
+          createMemoryEdge(Src, Dst);
+          break;
+        case EdgeKind::Rooted:
+          createRootedEdge(Src, Dst);
+          break;
+        default:
+          llvm_unreachable("Unsupported type of edge.");
+        }
+      };
 
-        auto createEdgeOfKind = [this](NodeType &Src, NodeType &Dst,
-                                       const EdgeKind K) {
-          switch (K) {
-          case EdgeKind::RegisterDefUse:
-            createDefUseEdge(Src, Dst);
-            break;
-          case EdgeKind::MemoryDependence:
-            createMemoryEdge(Src, Dst);
-            break;
-          case EdgeKind::Rooted:
-            createRootedEdge(Src, Dst);
-            break;
-          default:
-            llvm_unreachable("Unsupported type of edge.");
-          }
-        };
+      auto reconnectEdges = [&](NodeType *Src, NodeType *Dst, NodeType *New,
+                                const Direction Dir) {
+        if (!Src->hasEdgeTo(*Dst))
+          return;
+        LLVM_DEBUG(
+            dbgs() << "reconnecting("
+                   << (Dir == Direction::Incoming ? "incoming)" : "outgoing)")
+                   << ":\nSrc:" << *Src << "\nDst:" << *Dst << "\nNew:" << *New
+                   << "\n");
+        assert((Dir == Direction::Incoming || Dir == Direction::Outgoing) &&
+               "Invalid direction.");
 
-        auto reconnectEdges = [&](NodeType *Src, NodeType *Dst, NodeType *New,
-                                  const Direction Dir) {
-          if (!Src->hasEdgeTo(*Dst))
-            return;
-          LLVM_DEBUG(dbgs()
-                     << "reconnecting("
-                     << (Dir == Direction::Incoming ? "incoming)" : "outgoing)")
-                     << ":\nSrc:" << *Src << "\nDst:" << *Dst
-                     << "\nNew:" << *New << "\n");
-          assert((Dir == Direction::Incoming || Dir == Direction::Outgoing) &&
-                 "Invalid direction.");
-
-          SmallVector<EdgeType *, 10> EL;
-          Src->findEdgesTo(*Dst, EL);
-          for (EdgeType *OldEdge : EL) {
-            EdgeKind Kind = OldEdge->getKind();
-            if (!EdgeAlreadyCreated[Dir][Kind]) {
-              if (Dir == Direction::Incoming) {
-                createEdgeOfKind(*Src, *New, Kind);
-                LLVM_DEBUG(dbgs() << "created edge from Src to New.\n");
-              } else if (Dir == Direction::Outgoing) {
-                createEdgeOfKind(*New, *Dst, Kind);
-                LLVM_DEBUG(dbgs() << "created edge from New to Dst.\n");
-              }
-              EdgeAlreadyCreated[Dir][Kind] = true;
+        SmallVector<EdgeType *, 10> EL;
+        Src->findEdgesTo(*Dst, EL);
+        for (EdgeType *OldEdge : EL) {
+          EdgeKind Kind = OldEdge->getKind();
+          if (!EdgeAlreadyCreated[Dir][Kind]) {
+            if (Dir == Direction::Incoming) {
+              createEdgeOfKind(*Src, *New, Kind);
+              LLVM_DEBUG(dbgs() << "created edge from Src to New.\n");
+            } else if (Dir == Direction::Outgoing) {
+              createEdgeOfKind(*New, *Dst, Kind);
+              LLVM_DEBUG(dbgs() << "created edge from New to Dst.\n");
             }
-            Src->removeEdge(*OldEdge);
-            destroyEdge(*OldEdge);
-            LLVM_DEBUG(dbgs() << "removed old edge between Src and Dst.\n\n");
+            EdgeAlreadyCreated[Dir][Kind] = true;
           }
-        };
+          Src->removeEdge(*OldEdge);
+          destroyEdge(*OldEdge);
+          LLVM_DEBUG(dbgs() << "removed old edge between Src and Dst.\n\n");
+        }
+      };
 
+      for (NodeType *SCCNode : NL) {
         // Process incoming edges incident to the pi-block node.
         reconnectEdges(N, SCCNode, &PiNode, Direction::Incoming);
 
