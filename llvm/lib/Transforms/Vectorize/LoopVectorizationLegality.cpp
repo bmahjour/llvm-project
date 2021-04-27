@@ -57,13 +57,17 @@ bool LoopVectorizeHints::Hint::validate(unsigned Val) {
   switch (Kind) {
   case HK_WIDTH:
     return isPowerOf2_32(Val) && Val <= VectorizerParams::MaxVectorWidth;
-  case HK_UNROLL:
+  case HK_INTERLEAVE:
     return isPowerOf2_32(Val) && Val <= MaxInterleaveFactor;
+  case HK_UNROLL_COUNT:
+    return Val >= 0;
   case HK_FORCE:
     return (Val <= 1);
   case HK_ISVECTORIZED:
   case HK_PREDICATE:
   case HK_SCALABLE:
+  case HK_UNROLL_DISABLED:
+  case HK_UNROLL_RUNTIME_DISABLED:
     return (Val == 0 || Val == 1);
   }
   return false;
@@ -73,7 +77,10 @@ LoopVectorizeHints::LoopVectorizeHints(const Loop *L,
                                        bool InterleaveOnlyWhenForced,
                                        OptimizationRemarkEmitter &ORE)
     : Width("vectorize.width", VectorizerParams::VectorizationFactor, HK_WIDTH),
-      Interleave("interleave.count", InterleaveOnlyWhenForced, HK_UNROLL),
+      Interleave("interleave.count", InterleaveOnlyWhenForced, HK_INTERLEAVE),
+      UnrollCount("unroll.count", 0, HK_UNROLL_COUNT),
+      UnrollDisabled("unroll.disable", 0, HK_UNROLL_DISABLED),
+      UnrollRuntimeDisabled("unroll.runtime.disable", 0, HK_UNROLL_RUNTIME_DISABLED),
       Force("vectorize.enable", FK_Undefined, HK_FORCE),
       IsVectorized("isvectorized", 0, HK_ISVECTORIZED),
       Predicate("vectorize.predicate.enable", FK_Undefined, HK_PREDICATE),
@@ -91,8 +98,8 @@ LoopVectorizeHints::LoopVectorizeHints(const Loop *L,
     // consider the loop to have been already vectorized because there's
     // nothing more that we can do.
     IsVectorized.Value =
-        getWidth() == ElementCount::getFixed(1) && Interleave.Value == 1;
-  LLVM_DEBUG(if (InterleaveOnlyWhenForced && Interleave.Value == 1) dbgs()
+        getWidth() == ElementCount::getFixed(1) && getInterleave() == 1;
+  LLVM_DEBUG(if (InterleaveOnlyWhenForced && getInterleave() == 1) dbgs()
              << "LV: Interleaving disabled by the pass manager\n");
 }
 
@@ -165,8 +172,8 @@ void LoopVectorizeHints::emitRemarkWithHints() const {
         R << " (Force=" << NV("Force", true);
         if (Width.Value != 0)
           R << ", Vector Width=" << NV("VectorWidth", getWidth());
-        if (Interleave.Value != 0)
-          R << ", Interleave Count=" << NV("InterleaveCount", Interleave.Value);
+        if (getInterleave() != 0)
+          R << ", Interleave Count=" << NV("InterleaveCount", getInterleave());
         R << ")";
       }
       return R;
@@ -213,10 +220,12 @@ void LoopVectorizeHints::getHintsFromMetadata() {
     if (!S)
       continue;
 
+    if (Args.size() > 1)
+      continue;
+
     // Check if the hint starts with the loop metadata prefix.
     StringRef Name = S->getString();
-    if (Args.size() == 1)
-      setHint(Name, Args[0]);
+    setHint(Name, Args.size() == 1 ? Args[0] : nullptr);
   }
 }
 
@@ -225,13 +234,25 @@ void LoopVectorizeHints::setHint(StringRef Name, Metadata *Arg) {
     return;
   Name = Name.substr(Prefix().size(), StringRef::npos);
 
-  const ConstantInt *C = mdconst::dyn_extract<ConstantInt>(Arg);
-  if (!C)
-    return;
-  unsigned Val = C->getZExtValue();
+  // Use value of 1 to indicate 'true' when MD has no operand. For example if
+  // `unroll.disable` is seen, then UnrollDisabled will have a value of 1.
+  unsigned Val = 1;
+  if (Arg) {
+    const ConstantInt *C = mdconst::dyn_extract<ConstantInt>(Arg);
+    if (!C)
+      return;
+    Val = C->getZExtValue();
+  }
 
-  Hint *Hints[] = {&Width,        &Interleave, &Force,
-                   &IsVectorized, &Predicate,  &Scalable};
+  Hint *Hints[] = {&Width,
+                   &Interleave,
+                   &UnrollCount,
+                   &UnrollDisabled,
+                   &UnrollRuntimeDisabled,
+                   &Force,
+                   &IsVectorized,
+                   &Predicate,
+                   &Scalable};
   for (auto H : Hints) {
     if (Name == H->Name) {
       if (H->validate(Val))
