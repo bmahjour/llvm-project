@@ -47,9 +47,6 @@ class LoopVectorizeHints {
   enum HintKind {
     HK_WIDTH,
     HK_INTERLEAVE,
-    HK_UNROLL_COUNT,
-    HK_UNROLL_DISABLED,
-    HK_UNROLL_RUNTIME_DISABLED,
     HK_FORCE,
     HK_ISVECTORIZED,
     HK_PREDICATE,
@@ -73,15 +70,6 @@ class LoopVectorizeHints {
 
   /// Vectorization interleave factor.
   Hint Interleave;
-
-  /// Unroll factor (used for making interleave decisions).
-  Hint UnrollCount;
-
-  /// Unrolling disabled (used for making interleave decisions).
-  Hint UnrollDisabled;
-
-  /// Runtime unrolling disabled (used for making interleave decisions).
-  Hint UnrollRuntimeDisabled;
 
   /// Vectorization forced
   Hint Force;
@@ -126,10 +114,7 @@ public:
   unsigned getInterleave() const {
     if (Interleave.Value)
       return Interleave.Value;
-    // Consider interleaving disabled, if nounroll is requested.
-    if (1 == UnrollCount.Value ||
-        1 == UnrollDisabled.Value ||
-        1 == UnrollRuntimeDisabled.Value)
+    if (llvm::hasUnrollTransformation(TheLoop) & TM_Disable)
       return 1;
     return 0;
   }
@@ -174,9 +159,7 @@ private:
   /// Find hints specified in the loop metadata and update local values.
   void getHintsFromMetadata();
 
-  /// Checks string hint with zero or one operand and set value if valid.
-  /// \p Arg is the hint MD operand if there is one operand, and null
-  /// otherwise.
+  /// Checks string hint with one operand and set value if valid.
   void setHint(StringRef Name, Metadata *Arg);
 
   /// The loop these hints belong to.

@@ -59,15 +59,11 @@ bool LoopVectorizeHints::Hint::validate(unsigned Val) {
     return isPowerOf2_32(Val) && Val <= VectorizerParams::MaxVectorWidth;
   case HK_INTERLEAVE:
     return isPowerOf2_32(Val) && Val <= MaxInterleaveFactor;
-  case HK_UNROLL_COUNT:
-    return Val >= 0;
   case HK_FORCE:
     return (Val <= 1);
   case HK_ISVECTORIZED:
   case HK_PREDICATE:
   case HK_SCALABLE:
-  case HK_UNROLL_DISABLED:
-  case HK_UNROLL_RUNTIME_DISABLED:
     return (Val == 0 || Val == 1);
   }
   return false;
@@ -78,9 +74,6 @@ LoopVectorizeHints::LoopVectorizeHints(const Loop *L,
                                        OptimizationRemarkEmitter &ORE)
     : Width("vectorize.width", VectorizerParams::VectorizationFactor, HK_WIDTH),
       Interleave("interleave.count", InterleaveOnlyWhenForced, HK_INTERLEAVE),
-      UnrollCount("unroll.count", 0, HK_UNROLL_COUNT),
-      UnrollDisabled("unroll.disable", 0, HK_UNROLL_DISABLED),
-      UnrollRuntimeDisabled("unroll.runtime.disable", 0, HK_UNROLL_RUNTIME_DISABLED),
       Force("vectorize.enable", FK_Undefined, HK_FORCE),
       IsVectorized("isvectorized", 0, HK_ISVECTORIZED),
       Predicate("vectorize.predicate.enable", FK_Undefined, HK_PREDICATE),
@@ -220,12 +213,10 @@ void LoopVectorizeHints::getHintsFromMetadata() {
     if (!S)
       continue;
 
-    if (Args.size() > 1)
-      continue;
-
     // Check if the hint starts with the loop metadata prefix.
     StringRef Name = S->getString();
-    setHint(Name, Args.size() == 1 ? Args[0] : nullptr);
+    if (Args.size() == 1)
+      setHint(Name, Args[0]);
   }
 }
 
@@ -234,25 +225,13 @@ void LoopVectorizeHints::setHint(StringRef Name, Metadata *Arg) {
     return;
   Name = Name.substr(Prefix().size(), StringRef::npos);
 
-  // Use value of 1 to indicate 'true' when MD has no operand. For example if
-  // `unroll.disable` is seen, then UnrollDisabled will have a value of 1.
-  unsigned Val = 1;
-  if (Arg) {
-    const ConstantInt *C = mdconst::dyn_extract<ConstantInt>(Arg);
-    if (!C)
-      return;
-    Val = C->getZExtValue();
-  }
+  const ConstantInt *C = mdconst::dyn_extract<ConstantInt>(Arg);
+  if (!C)
+    return;
+  unsigned Val = C->getZExtValue();
 
-  Hint *Hints[] = {&Width,
-                   &Interleave,
-                   &UnrollCount,
-                   &UnrollDisabled,
-                   &UnrollRuntimeDisabled,
-                   &Force,
-                   &IsVectorized,
-                   &Predicate,
-                   &Scalable};
+  Hint *Hints[] = {&Width,        &Interleave, &Force,
+                   &IsVectorized, &Predicate,  &Scalable};
   for (auto H : Hints) {
     if (Name == H->Name) {
       if (H->validate(Val))
