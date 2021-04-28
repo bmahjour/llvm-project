@@ -114,6 +114,8 @@ public:
   unsigned getInterleave() const {
     if (Interleave.Value)
       return Interleave.Value;
+    // If interleaving is not explicitly set, assume that if we do not want
+    // unrolling, we also don't want any interleaving.
     if (llvm::hasUnrollTransformation(TheLoop) & TM_Disable)
       return 1;
     return 0;
