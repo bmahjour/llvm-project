@@ -1366,11 +1366,11 @@ InstructionCost PPCTTIImpl::getVPMemoryOpCost(unsigned Opcode, Type *Src,
 
   if (!getVPLegalizationStrategy(*dyn_cast<VPIntrinsic>(I)).shouldDoNothing()) {
     // Currently we can only lower intrinsics with evl but no mask, on Power
-    // 9/10. Otherwise, we must scalarize. We need to extract the most/least
-    // significant byte of all halfwords aligned with vector elements, and do an
-    // access predicated on its 0th bit. We make the simplifying assumption that
-    // byte-extraction costs are stride-invariant, so we model the extraction as
-    // scalarizing a load of <NumElems x i8>.
+    // 9/10. Otherwise, we must scalarize. We need to extract (from the mask)
+    // the most/least significant byte of all halfwords aligned with vector
+    // elements, and do an access predicated on its 0th bit. We make the
+    // simplifying assumption that byte-extraction costs are stride-invariant,
+    // so we model the extraction as scalarizing a load of <NumElems x i8>.
     InstructionCost MaskSplitCost =
         getScalarizationOverhead(MaskTy, false, true);
     const InstructionCost ScalarCompareCostInstrCost =
@@ -1403,14 +1403,14 @@ InstructionCost PPCTTIImpl::getVPMemoryOpCost(unsigned Opcode, Type *Src,
     // If the op is guaranteed to be aligned to 128 bytes,
     // then VSX masked memops cost the same as unmasked memops.
     return LT.first;
-  else
-      // On P9 but not on P10, if the op is misaligned
-      // then it will cause a pipeline flush.
-      // We assume the average case: that ops with alignment <= 128
-      // will flush a full pipeline about half the time.
-      // The cost when this happens is about 80 cycles.
-      if (ST->getCPUDirective() == PPC::DIR_PWR9)
-    return PPC_PIPELINE_FLUSH_ESTIMATE / 2;
-  else
-    return LT.first;
+
+  // On P9 but not on P10, if the op is misaligned
+  // then it will cause a pipeline flush.
+  // We assume the average case: that ops with alignment <= 128
+  // will flush a full pipeline about half the time.
+  // The cost when this happens is about 80 cycles.
+  if (ST->getCPUDirective() == PPC::DIR_PWR9)
+    return P9PipelineFlushEstimate / 2;
+
+  return LT.first;
 }

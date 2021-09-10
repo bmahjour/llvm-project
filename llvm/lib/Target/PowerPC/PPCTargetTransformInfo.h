@@ -141,8 +141,10 @@ public:
                                     unsigned AddressSpace,
                                     TTI::TargetCostKind CostKind,
                                     const Instruction *I = nullptr);
-// The following constant is used for estimating costs on power9.
-#define PPC_PIPELINE_FLUSH_ESTIMATE 80
+private:
+  // The following constant is used for estimating costs on power9.
+  static const InstructionCost::CostType P9PipelineFlushEstimate = 80;
+
   /// @}
 };
 
