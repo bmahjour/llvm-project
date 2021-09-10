@@ -1120,6 +1120,13 @@ public:
                   TTI::TargetCostKind CostKind = TTI::TCK_RecipThroughput,
                   const Instruction *I = nullptr) const;
 
+  /// \return The cost of VP Load and Store instructions.
+  InstructionCost
+  getVPMemoryOpCost(unsigned Opcode, Type *Src, Align Alignment,
+                    unsigned AddressSpace,
+                    TTI::TargetCostKind CostKind = TTI::TCK_RecipThroughput,
+                    const Instruction *I = nullptr) const;
+
   /// \return The cost of masked Load and Store instructions.
   InstructionCost getMaskedMemoryOpCost(
       unsigned Opcode, Type *Src, Align Alignment, unsigned AddressSpace,
@@ -1641,6 +1648,11 @@ public:
                                           unsigned AddressSpace,
                                           TTI::TargetCostKind CostKind,
                                           const Instruction *I) = 0;
+  virtual InstructionCost getVPMemoryOpCost(unsigned Opcode, Type *Src,
+                                            Align Alignment,
+                                            unsigned AddressSpace,
+                                            TTI::TargetCostKind CostKind,
+                                            const Instruction *I) = 0;
   virtual InstructionCost
   getMaskedMemoryOpCost(unsigned Opcode, Type *Src, Align Alignment,
                         unsigned AddressSpace,
@@ -2143,6 +2155,13 @@ public:
                                   const Instruction *I) override {
     return Impl.getMemoryOpCost(Opcode, Src, Alignment, AddressSpace,
                                 CostKind, I);
+  }
+  InstructionCost getVPMemoryOpCost(unsigned Opcode, Type *Src, Align Alignment,
+                                    unsigned AddressSpace,
+                                    TTI::TargetCostKind CostKind,
+                                    const Instruction *I) override {
+    return Impl.getVPMemoryOpCost(Opcode, Src, Alignment, AddressSpace,
+                                  CostKind, I);
   }
   InstructionCost getMaskedMemoryOpCost(unsigned Opcode, Type *Src,
                                         Align Alignment, unsigned AddressSpace,
