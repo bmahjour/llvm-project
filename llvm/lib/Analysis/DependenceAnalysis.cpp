@@ -787,6 +787,8 @@ unsigned DependenceInfo::mapSrcLoop(const Loop *SrcLoop) const {
 unsigned DependenceInfo::mapDstLoop(const Loop *DstLoop) const {
   unsigned D = DstLoop->getLoopDepth();
   if (D > CommonLevels)
+    // This tries to make sure that we assign unique numbers to src and dst when
+    // the memory accesses reside in different loops that have the same depth.
     return D - CommonLevels + SrcLevels;
   else
     return D;
@@ -909,6 +911,13 @@ bool DependenceInfo::checkSubscript(const SCEV *Expr, const Loop *LoopNest,
   }
   if (!isLoopInvariant(Step, LoopNest))
     return false;
+
+  // If the subscript loop does not contain (and is not equal to) the loop where
+  // the instruction resides, we may be dealing with an LCSSA situation that
+  // messes up our level numbering system.
+  if ((AddRec->getLoop() != LoopNest) && !AddRec->getLoop()->contains(LoopNest))
+    return false;
+
   if (IsSrc)
     Loops.set(mapSrcLoop(AddRec->getLoop()));
   else
