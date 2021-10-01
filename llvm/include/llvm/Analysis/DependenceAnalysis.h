@@ -506,8 +506,8 @@ namespace llvm {
     ///     e - 5
     ///     f - 6
     ///     g - 7 = MaxLevels
-    void establishNestingLevels(const Instruction *Src,
-                                const Instruction *Dst);
+    void establishNestingLevels(const Instruction *Src, const Instruction *Dst,
+                                const SmallVector<Subscript> Pairs);
 
     unsigned CommonLevels, SrcLevels, MaxLevels;
 

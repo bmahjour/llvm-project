@@ -747,8 +747,9 @@ bool isLoadOrStore(const Instruction *I) {
 //     e - 5
 //     f - 6
 //     g - 7 = MaxLevels
-void DependenceInfo::establishNestingLevels(const Instruction *Src,
-                                            const Instruction *Dst) {
+void DependenceInfo::establishNestingLevels(
+    const Instruction *Src, const Instruction *Dst,
+    const SmallVector<Subscript> Pairs) {
   const BasicBlock *SrcBlock = Src->getParent();
   const BasicBlock *DstBlock = Dst->getParent();
   unsigned SrcLevel = LI->getLoopDepth(SrcBlock);
@@ -756,6 +757,30 @@ void DependenceInfo::establishNestingLevels(const Instruction *Src,
   const Loop *SrcLoop = LI->getLoopFor(SrcBlock);
   const Loop *DstLoop = LI->getLoopFor(DstBlock);
   SrcLevels = SrcLevel;
+  // If any of the subscripts for an instruction have a recurrence with a loop
+  // level that does not contain that instruction, we need to update the
+  // corresponding level number, to ensure a distinct loop is assigned. This
+  // effectively treats the instruction as if it was present inside the
+  // recurrence's loop. This is conservatively correct, since it may only cause
+  // more constraints to be propaged to the common levels.
+  if (SrcLoop != DstLoop) {
+    const SCEV *InnerMostSrcExpr = Pairs[Pairs.size() - 1].Src;
+    const SCEV *InnerMostDstExpr = Pairs[Pairs.size() - 1].Dst;
+    const SCEVAddRecExpr *SrcAddRec =
+        dyn_cast_or_null<SCEVAddRecExpr>(InnerMostSrcExpr);
+    const SCEVAddRecExpr *DstAddRec =
+        dyn_cast_or_null<SCEVAddRecExpr>(InnerMostDstExpr);
+    if (SrcAddRec && mapSrcLoop(SrcAddRec->getLoop()) > SrcLevel) {
+      SrcLoop = SrcAddRec->getLoop();
+      SrcLevels = LI->getLoopDepth(SrcLoop->getHeader());
+      SrcLevel = SrcLevels;
+    }
+    if (DstAddRec && mapDstLoop(DstAddRec->getLoop()) > DstLevel) {
+      DstLoop = DstAddRec->getLoop();
+      DstLevel = LI->getLoopDepth(DstLoop->getHeader());
+    }
+  }
+
   MaxLevels = SrcLevel + DstLevel;
   while (SrcLevel > DstLevel) {
     SrcLoop = SrcLoop->getParentLoop();
@@ -774,7 +799,6 @@ void DependenceInfo::establishNestingLevels(const Instruction *Src,
   MaxLevels -= CommonLevels;
 }
 
-
 // Given one of the loops containing the source, return
 // its level index in our numbering scheme.
 unsigned DependenceInfo::mapSrcLoop(const Loop *SrcLoop) const {
@@ -787,6 +811,8 @@ unsigned DependenceInfo::mapSrcLoop(const Loop *SrcLoop) const {
 unsigned DependenceInfo::mapDstLoop(const Loop *DstLoop) const {
   unsigned D = DstLoop->getLoopDepth();
   if (D > CommonLevels)
+    // This tries to make sure that we assign unique numbers to src and dst when
+    // the memory accesses reside in different loops that have the same depth.
     return D - CommonLevels + SrcLevels;
   else
     return D;
@@ -3558,16 +3584,10 @@ DependenceInfo::depends(Instruction *Src, Instruction *Dst,
     break; // The underlying objects alias; test accesses for dependence.
   }
 
-  // establish loop nesting levels
-  establishNestingLevels(Src, Dst);
-  LLVM_DEBUG(dbgs() << "    common nesting levels = " << CommonLevels << "\n");
-  LLVM_DEBUG(dbgs() << "    maximum nesting levels = " << MaxLevels << "\n");
-
-  FullDependence Result(Src, Dst, PossiblyLoopIndependent, CommonLevels);
   ++TotalArrayPairs;
 
   unsigned Pairs = 1;
-  SmallVector<Subscript, 2> Pair(Pairs);
+  SmallVector<Subscript> Pair(Pairs);
   const SCEV *SrcSCEV = SE->getSCEV(SrcPtr);
   const SCEV *DstSCEV = SE->getSCEV(DstPtr);
   LLVM_DEBUG(dbgs() << "    SrcSCEV = " << *SrcSCEV << "\n");
@@ -3591,6 +3611,13 @@ DependenceInfo::depends(Instruction *Src, Instruction *Dst,
       Pairs = Pair.size();
     }
   }
+
+  // establish loop nesting levels
+  establishNestingLevels(Src, Dst, Pair);
+  LLVM_DEBUG(dbgs() << "    common nesting levels = " << CommonLevels << "\n");
+  LLVM_DEBUG(dbgs() << "    maximum nesting levels = " << MaxLevels << "\n");
+
+  FullDependence Result(Src, Dst, PossiblyLoopIndependent, CommonLevels);
 
   for (unsigned P = 0; P < Pairs; ++P) {
     Pair[P].Loops.resize(MaxLevels + 1);
@@ -3972,13 +3999,8 @@ const SCEV *DependenceInfo::getSplitIteration(const Dependence &Dep,
              AA, F->getParent()->getDataLayout(), MemoryLocation::get(Dst),
              MemoryLocation::get(Src)) == AliasResult::MustAlias);
 
-  // establish loop nesting levels
-  establishNestingLevels(Src, Dst);
-
-  FullDependence Result(Src, Dst, false, CommonLevels);
-
   unsigned Pairs = 1;
-  SmallVector<Subscript, 2> Pair(Pairs);
+  SmallVector<Subscript> Pair(Pairs);
   const SCEV *SrcSCEV = SE->getSCEV(SrcPtr);
   const SCEV *DstSCEV = SE->getSCEV(DstPtr);
   Pair[0].Src = SrcSCEV;
@@ -3990,6 +4012,11 @@ const SCEV *DependenceInfo::getSplitIteration(const Dependence &Dep,
       Pairs = Pair.size();
     }
   }
+
+  // establish loop nesting levels
+  establishNestingLevels(Src, Dst, Pair);
+
+  FullDependence Result(Src, Dst, false, CommonLevels);
 
   for (unsigned P = 0; P < Pairs; ++P) {
     Pair[P].Loops.resize(MaxLevels + 1);
