@@ -137,6 +137,7 @@ public:
   bool areFunctionArgsABICompatible(const Function *Caller,
                                     const Function *Callee,
                                     SmallPtrSetImpl<Argument *> &Args) const;
+  bool hasActiveVectorLength(Type *DataType, Align Alignment) const;
   InstructionCost getVPMemoryOpCost(unsigned Opcode, Type *Src, Align Alignment,
                                     unsigned AddressSpace,
                                     TTI::TargetCostKind CostKind,

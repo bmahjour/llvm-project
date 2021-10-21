@@ -1338,6 +1338,11 @@ bool PPCTTIImpl::getTgtMemIntrinsic(IntrinsicInst *Inst,
   return false;
 }
 
+bool PPCTTIImpl::hasActiveVectorLength(Type *DataType, Align Alignment) const {
+  // TODO
+  return false;
+}
+
 InstructionCost PPCTTIImpl::getVPMemoryOpCost(unsigned Opcode, Type *Src,
                                               Align Alignment,
                                               unsigned AddressSpace,
