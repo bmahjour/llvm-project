@@ -1358,59 +1358,57 @@ InstructionCost PPCTTIImpl::getVPMemoryOpCost(unsigned Opcode, Type *Src,
   auto *SrcVTy = dyn_cast<FixedVectorType>(Src);
   assert(SrcVTy && "Expected a vector type for VP memory operations");
 
-  // VSX masks have lanes per bit, but the predication is per halfword.
-  unsigned NumElems = SrcVTy->getNumElements();
-  auto *SrcScalarTy = SrcVTy->getScalarType();
-  auto *MaskI8Ty = Type::getInt8Ty(SrcVTy->getContext());
-  auto *MaskTy = FixedVectorType::get(MaskI8Ty, NumElems);
+  if (getVPLegalizationStrategy(*dyn_cast<VPIntrinsic>(I)).shouldDoNothing()) {
+    std::pair<InstructionCost, MVT> LT =
+        TLI->getTypeLegalizationCost(DL, SrcVTy);
+    InstructionCost Cost = vectorCostAdjustment(LT.first, Opcode, Src, nullptr);
 
-  if (!getVPLegalizationStrategy(*dyn_cast<VPIntrinsic>(I)).shouldDoNothing()) {
-    // Currently we can only lower intrinsics with evl but no mask, on Power
-    // 9/10. Otherwise, we must scalarize. We need to extract (from the mask)
-    // the most/least significant byte of all halfwords aligned with vector
-    // elements, and do an access predicated on its 0th bit. We make the
-    // simplifying assumption that byte-extraction costs are stride-invariant,
-    // so we model the extraction as scalarizing a load of <NumElems x i8>.
-    InstructionCost MaskSplitCost =
-        getScalarizationOverhead(MaskTy, false, true);
-    const InstructionCost ScalarCompareCostInstrCost =
-        getCmpSelInstrCost(Instruction::ICmp, MaskI8Ty, nullptr,
-                           CmpInst::BAD_ICMP_PREDICATE, CostKind);
+    // On P9 but not on P10, if the op is misaligned then it will cause a
+    // pipeline flush. Otherwise the VSX masked memops cost the same as unmasked
+    // ones.
+    if (Alignment >= 16 || ST->getCPUDirective() != PPC::DIR_PWR9)
+      return Cost;
 
-    assert(ScalarCompareCostInstrCost.isValid() &&
-           "Expected valid instruction cost");
-    int ScalarCompareCost = *(ScalarCompareCostInstrCost.getValue());
-
-    const InstructionCost BranchInstrCost =
-        getCFInstrCost(Instruction::Br, CostKind);
-    assert(BranchInstrCost.isValid() && "Expected valid instruction cost");
-    int BranchCost = *BranchInstrCost.getValue();
-    int MaskCmpCost = NumElems * (BranchCost + ScalarCompareCost);
-
-    InstructionCost ValueSplitCost =
-        getScalarizationOverhead(SrcVTy, IsLoad, !IsLoad);
-    const InstructionCost ScalarMemOpInstrCost =
-        NumElems * BaseT::getMemoryOpCost(Opcode, SrcScalarTy, Alignment,
-                                          AddressSpace, CostKind);
-    assert(ScalarMemOpInstrCost.isValid() && "Expected valid instruction cost");
-    int ScalarMemOpCost = *(ScalarMemOpInstrCost.getValue());
-    return ScalarMemOpCost + ValueSplitCost + MaskSplitCost + MaskCmpCost;
+    // We assume the average case: that ops with alignment <= 128
+    // will flush a full pipeline about half the time.
+    // The cost when this happens is about 80 cycles.
+    return P9PipelineFlushEstimate / 2;
   }
 
-  std::pair<InstructionCost, MVT> LT = TLI->getTypeLegalizationCost(DL, SrcVTy);
+  // Usually we should not get to this point, but the following is an attempt to
+  // model the cost of legalization. Currently we can only lower intrinsics with
+  // evl but no mask, on Power 9/10. Otherwise, we must scalarize. We need to
+  // extract (from the mask) the most/least significant byte of all halfwords
+  // aligned with vector elements, and do an access predicated on its 0th bit.
+  // We make the simplifying assumption that byte-extraction costs are
+  // stride-invariant, so we model the extraction as scalarizing a load of
+  // <NumElems x i8>.
 
-  if (Alignment >= 16)
-    // If the op is guaranteed to be aligned to 128 bytes,
-    // then VSX masked memops cost the same as unmasked memops.
-    return LT.first;
+  // VSX masks have lanes per bit, but the predication is per halfword.
+  unsigned NumElems = SrcVTy->getNumElements();
+  auto *MaskI8Ty = Type::getInt8Ty(SrcVTy->getContext());
+  InstructionCost MaskSplitCost = getScalarizationOverhead(
+      FixedVectorType::get(MaskI8Ty, NumElems), false, true);
+  const InstructionCost ScalarCompareCostInstrCost =
+      getCmpSelInstrCost(Instruction::ICmp, MaskI8Ty, nullptr,
+                         CmpInst::BAD_ICMP_PREDICATE, CostKind);
 
-  // On P9 but not on P10, if the op is misaligned
-  // then it will cause a pipeline flush.
-  // We assume the average case: that ops with alignment <= 128
-  // will flush a full pipeline about half the time.
-  // The cost when this happens is about 80 cycles.
-  if (ST->getCPUDirective() == PPC::DIR_PWR9)
-    return P9PipelineFlushEstimate / 2;
+  assert(ScalarCompareCostInstrCost.isValid() &&
+         "Expected valid instruction cost");
+  int ScalarCompareCost = *(ScalarCompareCostInstrCost.getValue());
 
-  return LT.first;
+  const InstructionCost BranchInstrCost =
+      getCFInstrCost(Instruction::Br, CostKind);
+  assert(BranchInstrCost.isValid() && "Expected valid instruction cost");
+  int BranchCost = *BranchInstrCost.getValue();
+  int MaskCmpCost = NumElems * (BranchCost + ScalarCompareCost);
+
+  InstructionCost ValueSplitCost =
+      getScalarizationOverhead(SrcVTy, IsLoad, !IsLoad);
+  const InstructionCost ScalarMemOpInstrCost =
+      NumElems * BaseT::getMemoryOpCost(Opcode, SrcVTy->getScalarType(),
+                                        Alignment, AddressSpace, CostKind);
+  assert(ScalarMemOpInstrCost.isValid() && "Expected valid instruction cost");
+  int ScalarMemOpCost = *(ScalarMemOpInstrCost.getValue());
+  return ScalarMemOpCost + ValueSplitCost + MaskSplitCost + MaskCmpCost;
 }
