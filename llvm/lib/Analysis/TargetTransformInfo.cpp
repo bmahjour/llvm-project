@@ -1072,8 +1072,9 @@ bool TargetTransformInfo::supportsScalableVectors() const {
   return TTIImpl->supportsScalableVectors();
 }
 
-bool TargetTransformInfo::hasActiveVectorLength() const {
-  return TTIImpl->hasActiveVectorLength();
+bool TargetTransformInfo::hasActiveVectorLength(Type *DataType,
+                                                Align Alignment) const {
+  return TTIImpl->hasActiveVectorLength(DataType, Alignment);
 }
 
 InstructionCost

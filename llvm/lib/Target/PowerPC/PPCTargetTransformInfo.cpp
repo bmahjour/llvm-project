@@ -1388,3 +1388,8 @@ bool PPCTTIImpl::getTgtMemIntrinsic(IntrinsicInst *Inst,
 
   return false;
 }
+
+bool PPCTTIImpl::hasActiveVectorLength(Type *DataType, Align Alignment) const {
+  // TODO
+  return false;
+}
