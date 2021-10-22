@@ -1339,8 +1339,27 @@ bool PPCTTIImpl::getTgtMemIntrinsic(IntrinsicInst *Inst,
 }
 
 bool PPCTTIImpl::hasActiveVectorLength(Type *DataType, Align Alignment) const {
-  // TODO
-  return false;
+  // Loads/stores with length instructions use bits 0-7 of the GPR operand and
+  // therefore cannot be used in 32-bit mode.
+  if ((!ST->hasP9Vector() && !ST->hasP10Vector()) || !ST->isPPC64())
+    return false;
+  if (auto *VecTy = dyn_cast<FixedVectorType>(DataType)) {
+    unsigned VecWidth = DataType->getPrimitiveSizeInBits();
+    return VecWidth == 128;
+  }
+  Type *ScalarTy = DataType->getScalarType();
+
+  if (ScalarTy->isPointerTy())
+    return true;
+
+  if (ScalarTy->isFloatTy() || ScalarTy->isDoubleTy())
+    return true;
+
+  if (!ScalarTy->isIntegerTy())
+    return false;
+
+  unsigned IntWidth = ScalarTy->getIntegerBitWidth();
+  return IntWidth == 8 || IntWidth == 16 || IntWidth == 32 || IntWidth == 64;
 }
 
 InstructionCost PPCTTIImpl::getVPMemoryOpCost(unsigned Opcode, Type *Src,
@@ -1363,7 +1382,7 @@ InstructionCost PPCTTIImpl::getVPMemoryOpCost(unsigned Opcode, Type *Src,
   auto *SrcVTy = dyn_cast<FixedVectorType>(Src);
   assert(SrcVTy && "Expected a vector type for VP memory operations");
 
-  if (getVPLegalizationStrategy(*dyn_cast<VPIntrinsic>(I)).shouldDoNothing()) {
+  if (hasActiveVectorLength(Src, Alignment)) {
     std::pair<InstructionCost, MVT> LT =
         TLI->getTypeLegalizationCost(DL, SrcVTy);
     InstructionCost Cost = vectorCostAdjustment(LT.first, Opcode, Src, nullptr);
