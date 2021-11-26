@@ -1395,10 +1395,9 @@ InstructionCost PPCTTIImpl::getVPMemoryOpCost(unsigned Opcode, Type *Src,
     if (Alignment >= 16 || ST->getCPUDirective() != PPC::DIR_PWR9)
       return Cost;
 
-    // We assume the average case: that ops with alignment <= 128
-    // will flush a full pipeline about half the time.
-    // The cost when this happens is about 80 cycles.
-    return P9PipelineFlushEstimate / 2;
+    // We assume 8-byte aligned data will actually be 16-byte aligned half
+    // the time, so we halve the flush cost for those cases.
+    return ((Alignment == 8) ? P9PipelineFlushEstimate / 2 : P9PipelineFlushEstimate);
   }
 
   // Usually we should not get to this point, but the following is an attempt to
