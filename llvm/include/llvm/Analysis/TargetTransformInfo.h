@@ -1398,10 +1398,11 @@ public:
   /// \name Vector Predication Information
   /// @{
   /// Whether the target supports the %evl parameter of VP intrinsic efficiently
-  /// in hardware, for the given type and alignment. (see LLVM Language
+  /// in hardware, for the given opcode and type/alignment. (see LLVM Language
   /// Reference - "Vector Predication Intrinsics").
   /// Use of %evl is discouraged when that is not the case.
-  bool hasActiveVectorLength(Type *DataType, Align Alignment) const;
+  bool hasActiveVectorLength(unsigned Opcode, Type *DataType,
+                             Align Alignment) const;
 
   struct VPLegalization {
     enum VPTransform {
@@ -1761,7 +1762,8 @@ public:
   virtual bool shouldExpandReduction(const IntrinsicInst *II) const = 0;
   virtual unsigned getGISelRematGlobalCost() const = 0;
   virtual bool supportsScalableVectors() const = 0;
-  virtual bool hasActiveVectorLength(Type *DataType, Align Alignment) const = 0;
+  virtual bool hasActiveVectorLength(unsigned Opcode, Type *DataType,
+                                     Align Alignment) const = 0;
   virtual InstructionCost getInstructionLatency(const Instruction *I) = 0;
   virtual VPLegalization
   getVPLegalizationStrategy(const VPIntrinsic &PI) const = 0;
@@ -2360,8 +2362,9 @@ public:
     return Impl.supportsScalableVectors();
   }
 
-  bool hasActiveVectorLength(Type *DataType, Align Alignment) const override {
-    return Impl.hasActiveVectorLength(DataType, Alignment);
+  bool hasActiveVectorLength(unsigned Opcode, Type *DataType,
+                             Align Alignment) const override {
+    return Impl.hasActiveVectorLength(Opcode, DataType, Alignment);
   }
 
   InstructionCost getInstructionLatency(const Instruction *I) override {
