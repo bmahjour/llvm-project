@@ -137,7 +137,6 @@ public:
   bool areFunctionArgsABICompatible(const Function *Caller,
                                     const Function *Callee,
                                     SmallPtrSetImpl<Argument *> &Args) const;
-  bool hasActiveVectorLength(Type *DataType, Align Alignment) const;
   /// @}
 };
 
