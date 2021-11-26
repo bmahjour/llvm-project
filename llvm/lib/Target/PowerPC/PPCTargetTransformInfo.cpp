@@ -1338,7 +1338,10 @@ bool PPCTTIImpl::getTgtMemIntrinsic(IntrinsicInst *Inst,
   return false;
 }
 
-bool PPCTTIImpl::hasActiveVectorLength(Type *DataType, Align Alignment) const {
+bool PPCTTIImpl::hasActiveVectorLength(unsigned Opcode, Type *DataType, Align Alignment) const {
+  // Only load and stores instructions can have variable vector length on Power.
+  if (Opcode != Instruction::Load && Opcode != Instruction::Store)
+    return false;
   // Loads/stores with length instructions use bits 0-7 of the GPR operand and
   // therefore cannot be used in 32-bit mode.
   if ((!ST->hasP9Vector() && !ST->hasP10Vector()) || !ST->isPPC64())
@@ -1377,12 +1380,11 @@ InstructionCost PPCTTIImpl::getVPMemoryOpCost(unsigned Opcode, Type *Src,
 
   assert((Opcode == Instruction::Load || Opcode == Instruction::Store) &&
          "Invalid Opcode");
-  bool IsLoad = (Opcode == Instruction::Load);
 
   auto *SrcVTy = dyn_cast<FixedVectorType>(Src);
   assert(SrcVTy && "Expected a vector type for VP memory operations");
 
-  if (hasActiveVectorLength(Src, Alignment)) {
+  if (hasActiveVectorLength(Opcode, Src, Alignment)) {
     std::pair<InstructionCost, MVT> LT =
         TLI->getTypeLegalizationCost(DL, SrcVTy);
     InstructionCost Cost = vectorCostAdjustment(LT.first, Opcode, Src, nullptr);
@@ -1401,38 +1403,6 @@ InstructionCost PPCTTIImpl::getVPMemoryOpCost(unsigned Opcode, Type *Src,
 
   // Usually we should not get to this point, but the following is an attempt to
   // model the cost of legalization. Currently we can only lower intrinsics with
-  // evl but no mask, on Power 9/10. Otherwise, we must scalarize. We need to
-  // extract (from the mask) the most/least significant byte of all halfwords
-  // aligned with vector elements, and do an access predicated on its 0th bit.
-  // We make the simplifying assumption that byte-extraction costs are
-  // stride-invariant, so we model the extraction as scalarizing a load of
-  // <NumElems x i8>.
-
-  // VSX masks have lanes per bit, but the predication is per halfword.
-  unsigned NumElems = SrcVTy->getNumElements();
-  auto *MaskI8Ty = Type::getInt8Ty(SrcVTy->getContext());
-  InstructionCost MaskSplitCost = getScalarizationOverhead(
-      FixedVectorType::get(MaskI8Ty, NumElems), false, true);
-  const InstructionCost ScalarCompareCostInstrCost =
-      getCmpSelInstrCost(Instruction::ICmp, MaskI8Ty, nullptr,
-                         CmpInst::BAD_ICMP_PREDICATE, CostKind);
-
-  assert(ScalarCompareCostInstrCost.isValid() &&
-         "Expected valid instruction cost");
-  int ScalarCompareCost = *(ScalarCompareCostInstrCost.getValue());
-
-  const InstructionCost BranchInstrCost =
-      getCFInstrCost(Instruction::Br, CostKind);
-  assert(BranchInstrCost.isValid() && "Expected valid instruction cost");
-  int BranchCost = *BranchInstrCost.getValue();
-  int MaskCmpCost = NumElems * (BranchCost + ScalarCompareCost);
-
-  InstructionCost ValueSplitCost =
-      getScalarizationOverhead(SrcVTy, IsLoad, !IsLoad);
-  const InstructionCost ScalarMemOpInstrCost =
-      NumElems * BaseT::getMemoryOpCost(Opcode, SrcVTy->getScalarType(),
-                                        Alignment, AddressSpace, CostKind);
-  assert(ScalarMemOpInstrCost.isValid() && "Expected valid instruction cost");
-  int ScalarMemOpCost = *(ScalarMemOpInstrCost.getValue());
-  return ScalarMemOpCost + ValueSplitCost + MaskSplitCost + MaskCmpCost;
+  // evl but no mask, on Power 9/10. Otherwise, we must scalarize.
+  return getMaskedMemoryOpCost(Opcode, Src, Alignment, AddressSpace, CostKind);
 }
