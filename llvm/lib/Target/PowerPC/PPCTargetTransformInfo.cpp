@@ -1338,7 +1338,8 @@ bool PPCTTIImpl::getTgtMemIntrinsic(IntrinsicInst *Inst,
   return false;
 }
 
-bool PPCTTIImpl::hasActiveVectorLength(unsigned Opcode, Type *DataType, Align Alignment) const {
+bool PPCTTIImpl::hasActiveVectorLength(unsigned Opcode, Type *DataType,
+                                       Align Alignment) const {
   // Only load and stores instructions can have variable vector length on Power.
   if (Opcode != Instruction::Load && Opcode != Instruction::Store)
     return false;
@@ -1388,6 +1389,7 @@ InstructionCost PPCTTIImpl::getVPMemoryOpCost(unsigned Opcode, Type *Src,
     std::pair<InstructionCost, MVT> LT =
         TLI->getTypeLegalizationCost(DL, SrcVTy);
     InstructionCost Cost = vectorCostAdjustment(LT.first, Opcode, Src, nullptr);
+    assert(Cost.isValid() && "Expected valid cost");
 
     // On P9 but not on P10, if the op is misaligned then it will cause a
     // pipeline flush. Otherwise the VSX masked memops cost the same as unmasked
@@ -1395,9 +1397,10 @@ InstructionCost PPCTTIImpl::getVPMemoryOpCost(unsigned Opcode, Type *Src,
     if (Alignment >= 16 || ST->getCPUDirective() != PPC::DIR_PWR9)
       return Cost;
 
-    // We assume 8-byte aligned data will actually be 16-byte aligned half
-    // the time, so we halve the flush cost for those cases.
-    return ((Alignment == 8) ? P9PipelineFlushEstimate / 2 : P9PipelineFlushEstimate);
+    float AlignmentProb = (float)(Alignment.value() - 1) / Alignment.value();
+    float MisalignmentProb = 1.0 - AlignmentProb;
+    return (MisalignmentProb * P9PipelineFlushEstimate) +
+      (AlignmentProb * *Cost.getValue());
   }
 
   // Usually we should not get to this point, but the following is an attempt to
