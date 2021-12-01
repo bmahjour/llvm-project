@@ -1394,13 +1394,19 @@ InstructionCost PPCTTIImpl::getVPMemoryOpCost(unsigned Opcode, Type *Src,
     // On P9 but not on P10, if the op is misaligned then it will cause a
     // pipeline flush. Otherwise the VSX masked memops cost the same as unmasked
     // ones.
-    if (Alignment >= 16 || ST->getCPUDirective() != PPC::DIR_PWR9)
+    const Align DesiredAlignment(16);
+    if (Alignment >= DesiredAlignment || ST->getCPUDirective() != PPC::DIR_PWR9)
       return Cost;
 
-    float AlignmentProb = (float)(Alignment.value() - 1) / Alignment.value();
+    // Since alignment may be under estimated, we try to compute the probability
+    // that the actual address is aligned to the desired boundary. For example
+    // an 8-byte aligned load is assumed to be actually 16-byte aligned half the
+    // time, while a 4-byte aligned load has a 25% chance of being 16-byte
+    // aligned.
+    float AlignmentProb = ((float)Alignment.value()) / DesiredAlignment.value();
     float MisalignmentProb = 1.0 - AlignmentProb;
     return (MisalignmentProb * P9PipelineFlushEstimate) +
-      (AlignmentProb * *Cost.getValue());
+           (AlignmentProb * *Cost.getValue());
   }
 
   // Usually we should not get to this point, but the following is an attempt to
