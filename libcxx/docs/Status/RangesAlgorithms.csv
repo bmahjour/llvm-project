@@ -21,8 +21,8 @@ Search,minmax,Not assigned,n/a,Not started
 Search,min_element,Nikolas Klauser,`D117025 <https://llvm.org/D117025>`_,✅
 Search,max_element,Nikolas Klauser,`D117523 <https://llvm.org/D117523>`_,✅
 Search,minmax_element,Not assigned,n/a,Not started
-Search,count,Not assigned,n/a,Not started
-Search,count_if,Not assigned,n/a,Not started
+Search,count,Nikolas Klauser, `D121523 <https://llvm.org/D121523>`_,✅
+Search,count_if,Nikolas Klauser, `D121523 <https://llvm.org/D121523>`_,✅
 Search,search,Not assigned,n/a,Not started
 Search,search_n,Not assigned,n/a,Not started
 Search,find_end,Not assigned,n/a,Not started
@@ -44,7 +44,7 @@ Write,move,Not assigned,n/a,Not started
 Write,move_backward,Not assigned,n/a,Not started
 Write,fill,Not assigned,n/a,Not started
 Write,fill_n,Not assigned,n/a,Not started
-Write,transform,Not assigned,n/a,Not started
+Write,transform,Nikolas Klauser,`D122173 <https://llvm.org/D122173>`_,✅
 Write,generate,Not assigned,n/a,Not started
 Write,generate_n,Not assigned,n/a,Not started
 Write,remove_copy,Not assigned,n/a,Not started
