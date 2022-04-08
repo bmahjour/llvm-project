@@ -310,17 +310,17 @@ CacheCostTy IndexedReference::computeRefCost(const Loop &L,
                << "Access is consecutive: RefCost=(TripCount*Stride)/CLS="
                << *RefCost << "\n");
   } else {
-    // If the indexed reference is not 'consecutive' the cost is equal to the
-    // number of iterations associated with the subscript corresponding to the
-    // loop. For example, given the indexed reference 'A[i][j][k]', and assuming
-    // the j-loop is in the innermost position, the cost would be equal to the
-    // iterations of the j-loop.
+    // If the indexed reference is not 'consecutive' the cost is proportional to
+    // the trip count and the depth of the dimension which the subject loop
+    // subscript is accessing. We try to estimate this by multiplying the cost
+    // by the trip counts of loops corresponding to the inner dimensions. For
+    // example, given the indexed reference 'A[i][j][k]', and assuming the
+    // i-loop is in the innermost position, the cost would be equal to the
+    // iterations of the i-loop multiplied by iterations of the j-loop.
     RefCost = TripCount;
 
-    unsigned Index = 0;
-    bool Found = getSubscriptIndex(L, Index);
-    (void)Found;
-    assert(Found && "Cound not locate a valid Index");
+    unsigned Index = getSubscriptIndex(L);
+    assert(Index >= 0 && "Cound not locate a valid Index");
 
     for (unsigned I = Index + 1; I < getNumSubscripts() - 1; ++I) {
       const SCEVAddRecExpr *AR = dyn_cast<SCEVAddRecExpr>(getSubscript(I));
@@ -453,15 +453,14 @@ bool IndexedReference::isConsecutive(const Loop &L, unsigned CLS) const {
   return SE.isKnownPredicate(ICmpInst::ICMP_ULT, Stride, CacheLineSize);
 }
 
-bool IndexedReference::getSubscriptIndex(const Loop &L, unsigned &Index) const {
+unsigned IndexedReference::getSubscriptIndex(const Loop &L) const {
   for (auto Idx : seq<unsigned>(0, getNumSubscripts())) {
     const SCEVAddRecExpr *AR = dyn_cast<SCEVAddRecExpr>(getSubscript(Idx));
     if (AR && AR->getLoop() == &L) {
-      Index = Idx;
-      return true;
+      return Idx;
     }
   }
-  return false;
+  return -1;
 }
 
 const SCEV *IndexedReference::getLastCoefficient() const {

@@ -107,12 +107,12 @@ private:
   /// smaller than the cache line size \p CLS.
   bool isConsecutive(const Loop &L, unsigned CLS) const;
 
-  /// Retrieve the \p Index of the subscript corresponding to the given loop \p
-  /// L. Return true if the subscript index is succesfully located and false
-  /// otherwise. For example given the indexed reference 'A[i][2j+1][3k+2][l]',
-  /// the call 'getSubscriptIndex(loop-k,Index)' would fill \p Index with the
-  /// value 2 and return true.
-  bool getSubscriptIndex(const Loop &L, unsigned &Index) const;
+  /// Retrieve the index of the subscript corresponding to the given loop \p
+  /// L. Return a zero-based positive index if the subscript index is
+  /// succesfully located and a negative value otherwise. For example given the
+  /// indexed reference 'A[i][2j+1][3k+2]', the call
+  /// 'getSubscriptIndex(loop-k)' would return value 2.
+  unsigned getSubscriptIndex(const Loop &L) const;
 
   /// Return the coefficient used in the rightmost dimension.
   const SCEV *getLastCoefficient() const;
