@@ -634,6 +634,7 @@ void StubHelperSection::setup() {
       make<Defined>("__dyld_private", nullptr, in.imageLoaderCache, 0, 0,
                     /*isWeakDef=*/false,
                     /*isExternal=*/false, /*isPrivateExtern=*/false,
+                    /*includeInSymtab=*/true,
                     /*isThumb=*/false, /*isReferencedDynamically=*/false,
                     /*noDeadStrip=*/false);
   dyldPrivate->used = true;
@@ -896,6 +897,9 @@ void SymtabSection::emitStabs() {
     assert(sym->isLive() &&
            "dead symbols should not be in localSymbols, externalSymbols");
     if (auto *defined = dyn_cast<Defined>(sym)) {
+      // Excluded symbols should have been filtered out in finalizeContents().
+      assert(defined->includeInSymtab);
+
       if (defined->isAbsolute())
         continue;
 
@@ -908,6 +912,7 @@ void SymtabSection::emitStabs() {
       ObjFile *file = dyn_cast_or_null<ObjFile>(isec->getFile());
       if (!file || !file->compileUnit)
         continue;
+
       symbolsNeedingStabs.push_back(defined);
     }
   }
@@ -964,11 +969,10 @@ void SymtabSection::finalizeContents() {
     if (auto *objFile = dyn_cast<ObjFile>(file)) {
       for (Symbol *sym : objFile->symbols) {
         if (auto *defined = dyn_cast_or_null<Defined>(sym)) {
-          if (!defined->isExternal() && defined->isLive()) {
-            StringRef name = defined->getName();
-            if (!name.startswith("l") && !name.startswith("L"))
-              addSymbol(localSymbols, sym);
-          }
+          if (defined->isExternal() || !defined->isLive() ||
+              !defined->includeInSymtab)
+            continue;
+          addSymbol(localSymbols, sym);
         }
       }
     }
