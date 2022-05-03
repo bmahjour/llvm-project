@@ -73,3 +73,42 @@ for.body272:                                      ; preds = %for.body272, %for.e
   %2 = load double, double* %arrayidx295, align 8
   br i1 undef, label %for.body272, label %for.cond1.preheader
 }
+
+
+;; void test3(long n, double *A) {
+;;     long  i;
+;;     for (i = 0; i*n <= n*n; ++i) {
+;;         A[i] = i;
+;;     }
+;;     A[i] = i;
+;; }
+
+; CHECK-LABEL: 'Dependence Analysis' for function 'test3':
+; CHECK: Src:  store double %conv, ptr %arrayidx, align 8 --> Dst:  store double %conv, ptr %arrayidx, align 8
+; CHECK-NEXT:    da analyze - none!
+; CHECK: Src:  store double %conv, ptr %arrayidx, align 8 --> Dst:  store double %conv2, ptr %arrayidx3, align 8
+; CHECK-NEXT:    da analyze - output [|<]!
+; CHECK: Src:  store double %conv2, ptr %arrayidx3, align 8 --> Dst:  store double %conv2, ptr %arrayidx3, align 8
+; CHECK-NEXT:    da analyze - none!
+
+define void @test3(i64 noundef %n, ptr nocapture noundef writeonly %A) {
+entry:
+  %mul1 = mul nsw i64 %n, %n
+  br label %for.body
+
+for.body:                                         ; preds = %entry, %for.body
+  %i.012 = phi i64 [ 0, %entry ], [ %inc, %for.body ]
+  %conv = sitofp i64 %i.012 to double
+  %arrayidx = getelementptr inbounds double, ptr %A, i64 %i.012
+  store double %conv, ptr %arrayidx, align 8
+  %inc = add nuw nsw i64 %i.012, 1
+  %mul = mul nsw i64 %inc, %n
+  %cmp.not = icmp sgt i64 %mul, %mul1
+  br i1 %cmp.not, label %for.end, label %for.body
+
+for.end:                                          ; preds = %for.body
+  %conv2 = sitofp i64 %inc to double
+  %arrayidx3 = getelementptr inbounds double, ptr %A, i64 %inc
+  store double %conv2, ptr %arrayidx3, align 8
+  ret void
+}

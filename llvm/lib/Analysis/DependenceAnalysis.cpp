@@ -912,10 +912,13 @@ bool DependenceInfo::checkSubscript(const SCEV *Expr, const Loop *LoopNest,
   if (!isLoopInvariant(Step, LoopNest))
     return false;
 
-  // If the subscript loop does not contain (and is not equal to) the loop where
-  // the instruction resides, we may be dealing with an LCSSA situation that
-  // messes up our level numbering system.
-  if ((AddRec->getLoop() != LoopNest) && !AddRec->getLoop()->contains(LoopNest))
+  // If disposition for this AddRec is not invariant and not computable, then
+  // it's not linear. This can happen, for example, when a subscript in one
+  // loop references an IV from a sibiling loop.
+  using DispositionTy = ScalarEvolution::LoopDisposition;
+  DispositionTy Disposition = SE->getLoopDisposition(AddRec, LoopNest);
+  if (Disposition != DispositionTy::LoopInvariant &&
+      Disposition != DispositionTy::LoopComputable)
     return false;
 
   if (IsSrc)
