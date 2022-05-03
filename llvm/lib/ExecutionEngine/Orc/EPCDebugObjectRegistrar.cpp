@@ -43,10 +43,10 @@ createJITLoaderGDBRegistrar(ExecutionSession &ES) {
       ES, ExecutorAddr((*Result)[0][0]));
 }
 
-Error EPCDebugObjectRegistrar::registerDebugObject(sys::MemoryBlock TargetMem) {
-  return ES.callSPSWrapper<void(SPSExecutorAddr, uint64_t)>(
-      RegisterFn, ExecutorAddr::fromPtr(TargetMem.base()),
-      static_cast<uint64_t>(TargetMem.allocatedSize()));
+Error EPCDebugObjectRegistrar::registerDebugObject(
+    ExecutorAddrRange TargetMem) {
+  return ES.callSPSWrapper<void(shared::SPSExecutorAddrRange)>(RegisterFn,
+                                                               TargetMem);
 }
 
 } // namespace orc

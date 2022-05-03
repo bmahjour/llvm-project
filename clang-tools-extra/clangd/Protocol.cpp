@@ -15,12 +15,9 @@
 #include "support/Logger.h"
 #include "clang/Basic/LLVM.h"
 #include "clang/Index/IndexSymbol.h"
-#include "llvm/ADT/Hashing.h"
-#include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/ErrorHandling.h"
-#include "llvm/Support/Format.h"
-#include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
@@ -305,6 +302,8 @@ SymbolKind indexSymbolKindToSymbolKind(index::SymbolKind Kind) {
   case index::SymbolKind::TemplateTemplateParm:
   case index::SymbolKind::TemplateTypeParm:
     return SymbolKind::TypeParameter;
+  case index::SymbolKind::Concept:
+    return SymbolKind::Interface;
   }
   llvm_unreachable("invalid symbol kind");
 }
@@ -382,6 +381,13 @@ bool fromJSON(const llvm::json::Value &Params, ClientCapabilities &R,
         if (auto *Parameter = Info->getObject("parameterInformation")) {
           if (auto OffsetSupport = Parameter->getBoolean("labelOffsetSupport"))
             R.OffsetsInSignatureHelp = *OffsetSupport;
+        }
+        if (const auto *DocumentationFormat =
+                Info->getArray("documentationFormat")) {
+          for (const auto &Format : *DocumentationFormat) {
+            if (fromJSON(Format, R.SignatureHelpDocumentationFormat, P))
+              break;
+          }
         }
       }
     }
@@ -695,7 +701,8 @@ bool fromJSON(const llvm::json::Value &Params, ExecuteCommandParams &R,
   if (ArgsArray->size() > 1) {
     P.field("arguments").report("Command should have 0 or 1 argument");
     return false;
-  } else if (ArgsArray->size() == 1) {
+  }
+  if (ArgsArray->size() == 1) {
     R.argument = ArgsArray->front();
   }
   return true;
@@ -1030,7 +1037,7 @@ llvm::json::Value toJSON(const SignatureInformation &SI) {
       {"label", SI.label},
       {"parameters", llvm::json::Array(SI.parameters)},
   };
-  if (!SI.documentation.empty())
+  if (!SI.documentation.value.empty())
     Result["documentation"] = SI.documentation;
   return std::move(Result);
 }
@@ -1309,30 +1316,40 @@ llvm::json::Value toJSON(const CallHierarchyOutgoingCall &C) {
 bool fromJSON(const llvm::json::Value &Params, InlayHintsParams &R,
               llvm::json::Path P) {
   llvm::json::ObjectMapper O(Params, P);
-  return O && O.map("textDocument", R.textDocument);
+  return O && O.map("textDocument", R.textDocument) && O.map("range", R.range);
 }
 
-llvm::json::Value toJSON(InlayHintKind K) {
+static llvm::StringLiteral toString(InlayHintKind K) {
   switch (K) {
   case InlayHintKind::ParameterHint:
     return "parameter";
   case InlayHintKind::TypeHint:
     return "type";
+  case InlayHintKind::DesignatorHint:
+    return "designator";
   }
   llvm_unreachable("Unknown clang.clangd.InlayHintKind");
 }
 
+llvm::json::Value toJSON(InlayHintKind K) { return toString(K); }
+
 llvm::json::Value toJSON(const InlayHint &H) {
-  return llvm::json::Object{
-      {"range", H.range}, {"kind", H.kind}, {"label", H.label}};
+  return llvm::json::Object{{"position", H.position},
+                            {"range", H.range},
+                            {"kind", H.kind},
+                            {"label", H.label}};
 }
 bool operator==(const InlayHint &A, const InlayHint &B) {
-  return std::tie(A.kind, A.range, A.label) ==
-         std::tie(B.kind, B.range, B.label);
+  return std::tie(A.position, A.range, A.kind, A.label) ==
+         std::tie(B.position, B.range, B.kind, B.label);
 }
 bool operator<(const InlayHint &A, const InlayHint &B) {
-  return std::tie(A.kind, A.range, A.label) <
-         std::tie(B.kind, B.range, B.label);
+  return std::tie(A.position, A.range, A.kind, A.label) <
+         std::tie(B.position, B.range, B.kind, B.label);
+}
+
+llvm::raw_ostream &operator<<(llvm::raw_ostream &OS, InlayHintKind Kind) {
+  return OS << toString(Kind);
 }
 
 static const char *toString(OffsetEncoding OE) {

@@ -25,11 +25,13 @@
 
 #include "X86.h"
 #include "X86InstrBuilder.h"
+#include "X86MachineFunctionInfo.h"
 #include "X86RegisterInfo.h"
 #include "X86Subtarget.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/CodeGen/MachineLoopInfo.h"
+#include "llvm/CodeGen/MachineModuleInfo.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/Passes.h"
 #include "llvm/CodeGen/TargetInstrInfo.h"
@@ -39,10 +41,15 @@
 using namespace llvm;
 
 #define DEBUG_TYPE "tile-pre-config"
-#define REPORT_CONFIG_FAIL                                                     \
-  report_fatal_error(                                                          \
-      MF.getName() +                                                           \
-      ": Failed to config tile register, please define the shape earlier");
+
+static void emitErrorMsg(MachineFunction &MF) {
+  SmallString<32> Str;
+  Twine ErrorMsg =
+      MF.getName() +
+      ": Failed to config tile register, please define the shape earlier";
+  LLVMContext &Context = MF.getMMI().getModule()->getContext();
+  Context.emitError(ErrorMsg);
+}
 
 namespace {
 
@@ -235,6 +242,7 @@ bool X86PreTileConfig::runOnMachineFunction(MachineFunction &MF) {
   const TargetInstrInfo *TII = ST.getInstrInfo();
   const TargetRegisterInfo *TRI = ST.getRegisterInfo();
   const TargetRegisterClass *RC = TRI->getRegClass(X86::TILERegClassID);
+  X86MachineFunctionInfo *X86FI = MF.getInfo<X86MachineFunctionInfo>();
 
   BitVector AMXRegs(TRI->getNumRegs());
   for (unsigned I = 0; I < RC->getNumRegs(); I++)
@@ -294,17 +302,25 @@ bool X86PreTileConfig::runOnMachineFunction(MachineFunction &MF) {
   // There's no AMX instruction if we didn't find a tile config live in point.
   if (CfgNeedInsert.empty())
     return false;
+  X86FI->setHasVirtualTileReg(true);
 
   // Avoid to insert ldtilecfg before any shape defs.
   SmallVector<MachineBasicBlock *, 8> WorkList;
   for (auto &I : ShapeBBs) {
     // TODO: We can hoist shapes across BBs here.
-    if (BBVisitedInfo[I.first].HasAMXRegLiveIn)
-      REPORT_CONFIG_FAIL
+    if (BBVisitedInfo[I.first].HasAMXRegLiveIn) {
+      // We are not able to config tile registers since the shape to config
+      // is not defined yet. Emit error message and continue. The function
+      // would not config tile registers.
+      emitErrorMsg(MF);
+      return false;
+    }
     if (BBVisitedInfo[I.first].FirstAMX &&
         BBVisitedInfo[I.first].FirstAMX < I.second.back() &&
-        !hoistShapesInBB(I.first, I.second))
-      REPORT_CONFIG_FAIL
+        !hoistShapesInBB(I.first, I.second)) {
+      emitErrorMsg(MF);
+      return false;
+    }
     WorkList.push_back(I.first);
   }
   while (!WorkList.empty()) {

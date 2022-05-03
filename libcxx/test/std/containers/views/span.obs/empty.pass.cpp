@@ -9,7 +9,7 @@
 
 // <span>
 
-// constexpr bool empty() const noexcept;
+// [[nodiscard]] constexpr bool empty() const noexcept;
 //
 
 

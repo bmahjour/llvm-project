@@ -76,9 +76,8 @@ bool AMDGPULowerIntrinsics::expandMemIntrinsicUses(Function &F) {
   Intrinsic::ID ID = F.getIntrinsicID();
   bool Changed = false;
 
-  for (auto I = F.user_begin(), E = F.user_end(); I != E;) {
-    Instruction *Inst = cast<Instruction>(*I);
-    ++I;
+  for (User *U : llvm::make_early_inc_range(F.users())) {
+    Instruction *Inst = cast<Instruction>(U);
 
     switch (ID) {
     case Intrinsic::memcpy: {
@@ -157,11 +156,8 @@ bool AMDGPULowerIntrinsics::runOnModule(Module &M) {
         Changed = true;
       break;
 
-    case Intrinsic::amdgcn_workitem_id_x:
     case Intrinsic::r600_read_tidig_x:
-    case Intrinsic::amdgcn_workitem_id_y:
     case Intrinsic::r600_read_tidig_y:
-    case Intrinsic::amdgcn_workitem_id_z:
     case Intrinsic::r600_read_tidig_z:
     case Intrinsic::r600_read_local_size_x:
     case Intrinsic::r600_read_local_size_y:

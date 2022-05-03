@@ -12,19 +12,21 @@
 #include "Protocol.h"
 #include "SourceCode.h"
 #include "index/Symbol.h"
-#include "support/Logger.h"
 #include "support/Path.h"
+#include "clang/Basic/FileEntry.h"
 #include "clang/Basic/TokenKinds.h"
 #include "clang/Format/Format.h"
+#include "clang/Frontend/CompilerInstance.h"
 #include "clang/Lex/HeaderSearch.h"
-#include "clang/Lex/PPCallbacks.h"
+#include "clang/Lex/Preprocessor.h"
 #include "clang/Tooling/Inclusions/HeaderIncludes.h"
+#include "clang/Tooling/Inclusions/StandardLibrary.h"
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem/UniqueID.h"
-#include "llvm/Support/VirtualFileSystem.h"
 #include <string>
 
 namespace clang {
@@ -60,6 +62,8 @@ struct Inclusion {
   unsigned HashOffset = 0; // Byte offset from start of file to #.
   int HashLine = 0;        // Line number containing the directive, 0-indexed.
   SrcMgr::CharacteristicKind FileKind = SrcMgr::C_User;
+  llvm::Optional<unsigned> HeaderID;
+  bool BehindPragmaKeep = false; // Has IWYU pragma: keep right after.
 };
 llvm::raw_ostream &operator<<(llvm::raw_ostream &, const Inclusion &);
 bool operator==(const Inclusion &LHS, const Inclusion &RHS);
@@ -119,19 +123,26 @@ public:
     RealPathNames.emplace_back();
   }
 
+  // Inserts a PPCallback and CommentHandler that visits all includes in the
+  // main file and populates the structure. It will also scan for IWYU pragmas
+  // in comments.
+  void collect(const CompilerInstance &CI);
+
   // HeaderID identifies file in the include graph. It corresponds to a
   // FileEntry rather than a FileID, but stays stable across preamble & main
   // file builds.
   enum class HeaderID : unsigned {};
 
-  llvm::Optional<HeaderID> getID(const FileEntry *Entry,
-                                 const SourceManager &SM) const;
-  HeaderID getOrCreateID(const FileEntry *Entry,
-                         const SourceManager &SM);
+  llvm::Optional<HeaderID> getID(const FileEntry *Entry) const;
+  HeaderID getOrCreateID(FileEntryRef Entry);
 
   StringRef getRealPath(HeaderID ID) const {
     assert(static_cast<unsigned>(ID) <= RealPathNames.size());
     return RealPathNames[static_cast<unsigned>(ID)];
+  }
+
+  bool isSelfContained(HeaderID ID) const {
+    return !NonSelfContained.contains(ID);
   }
 
   // Return all transitively reachable files.
@@ -141,31 +152,40 @@ public:
   // All transitive includes (absolute paths), with their minimum include depth.
   // Root --> 0, #included file --> 1, etc.
   // Root is the ID of the header being visited first.
-  // Usually it is getID(SM.getFileEntryForID(SM.getMainFileID()), SM).
-  llvm::DenseMap<HeaderID, unsigned> includeDepth(HeaderID Root) const;
+  llvm::DenseMap<HeaderID, unsigned>
+  includeDepth(HeaderID Root = MainFileID) const;
 
   // Maps HeaderID to the ids of the files included from it.
   llvm::DenseMap<HeaderID, SmallVector<HeaderID>> IncludeChildren;
 
+  llvm::DenseMap<tooling::stdlib::Header, llvm::SmallVector<HeaderID>>
+      StdlibHeaders;
+
   std::vector<Inclusion> MainFileIncludes;
 
-private:
-  std::vector<std::string> RealPathNames; // In HeaderID order.
-  // HeaderID maps the FileEntry::UniqueID to the internal representation.
-  // Identifying files in a way that persists from preamble build to subsequent
-  // builds is surprisingly hard. FileID is unavailable in
-  // InclusionDirective(), and RealPathName and UniqueID are not preserved in
-  // the preamble.
-  //
-  // We reserve 0 to the main file and will manually check for that in getID
-  // and getOrCreateID because llvm::sys::fs::UniqueID is not stable when their
+  // We reserve HeaderID(0) for the main file and will manually check for that
+  // in getID and getOrCreateID because the UniqueID is not stable when the
   // content of the main file changes.
-  llvm::DenseMap<llvm::sys::fs::UniqueID, HeaderID> UIDToIndex;
-};
+  static const HeaderID MainFileID = HeaderID(0u);
 
-/// Returns a PPCallback that visits all inclusions in the main file.
-std::unique_ptr<PPCallbacks>
-collectIncludeStructureCallback(const SourceManager &SM, IncludeStructure *Out);
+  class RecordHeaders;
+
+private:
+  // MainFileEntry will be used to check if the queried file is the main file
+  // or not.
+  const FileEntry *MainFileEntry = nullptr;
+
+  std::vector<std::string> RealPathNames; // In HeaderID order.
+  // FileEntry::UniqueID is mapped to the internal representation (HeaderID).
+  // Identifying files in a way that persists from preamble build to subsequent
+  // builds is surprisingly hard. FileID is unavailable in InclusionDirective(),
+  // and RealPathName and UniqueID are not preserved in
+  // the preamble.
+  llvm::DenseMap<llvm::sys::fs::UniqueID, HeaderID> UIDToIndex;
+  // Contains HeaderIDs of all non self-contained entries in the
+  // IncludeStructure.
+  llvm::DenseSet<HeaderID> NonSelfContained;
+};
 
 // Calculates insertion edit for including a new header in a file.
 class IncludeInserter {
@@ -228,16 +248,14 @@ private:
 
 namespace llvm {
 
-// Support Tokens as DenseMap keys.
+// Support HeaderIDs as DenseMap keys.
 template <> struct DenseMapInfo<clang::clangd::IncludeStructure::HeaderID> {
   static inline clang::clangd::IncludeStructure::HeaderID getEmptyKey() {
-    return static_cast<clang::clangd::IncludeStructure::HeaderID>(
-        DenseMapInfo<unsigned>::getEmptyKey());
+    return static_cast<clang::clangd::IncludeStructure::HeaderID>(-1);
   }
 
   static inline clang::clangd::IncludeStructure::HeaderID getTombstoneKey() {
-    return static_cast<clang::clangd::IncludeStructure::HeaderID>(
-        DenseMapInfo<unsigned>::getTombstoneKey());
+    return static_cast<clang::clangd::IncludeStructure::HeaderID>(-2);
   }
 
   static unsigned
@@ -247,30 +265,6 @@ template <> struct DenseMapInfo<clang::clangd::IncludeStructure::HeaderID> {
 
   static bool isEqual(const clang::clangd::IncludeStructure::HeaderID &LHS,
                       const clang::clangd::IncludeStructure::HeaderID &RHS) {
-    return LHS == RHS;
-  }
-};
-
-// Support Tokens as DenseMap keys.
-template <> struct DenseMapInfo<llvm::sys::fs::UniqueID> {
-  static inline llvm::sys::fs::UniqueID getEmptyKey() {
-    auto EmptyKey = DenseMapInfo<std::pair<unsigned, unsigned>>::getEmptyKey();
-    return {EmptyKey.first, EmptyKey.second};
-  }
-
-  static inline llvm::sys::fs::UniqueID getTombstoneKey() {
-    auto TombstoneKey =
-        DenseMapInfo<std::pair<unsigned, unsigned>>::getTombstoneKey();
-    return {TombstoneKey.first, TombstoneKey.second};
-  }
-
-  static unsigned getHashValue(const llvm::sys::fs::UniqueID &Tag) {
-    return hash_value(
-        std::pair<unsigned, unsigned>(Tag.getDevice(), Tag.getFile()));
-  }
-
-  static bool isEqual(const llvm::sys::fs::UniqueID &LHS,
-                      const llvm::sys::fs::UniqueID &RHS) {
     return LHS == RHS;
   }
 };

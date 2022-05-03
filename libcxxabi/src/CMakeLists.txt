@@ -116,7 +116,7 @@ if (NOT LIBCXXABI_USE_COMPILER_RT)
 endif ()
 
 # Setup flags.
-if (LIBCXXABI_SUPPORTS_NOSTDLIBXX_FLAG)
+if (CXX_SUPPORTS_NOSTDLIBXX_FLAG)
   add_link_flags_if_supported(-nostdlib++)
 else()
   add_link_flags_if_supported(-nodefaultlibs)
@@ -136,7 +136,8 @@ if ( APPLE )
       message(WARNING "LLVM_USE_SANITIZER=${LLVM_USE_SANITIZER} is not supported on OS X")
     endif()
     if (LIBFILE)
-      find_compiler_rt_dir(LIBDIR)
+      find_compiler_rt_library(builtins LIBCXXABI_BUILTINS_LIBRARY)
+      get_filename_component(LIBDIR "${LIBCXXABI_BUILTINS_LIBRARY}" DIRECTORY)
       if (NOT IS_DIRECTORY "${LIBDIR}")
         message(FATAL_ERROR "Cannot find compiler-rt directory on OS X required for LLVM_USE_SANITIZER")
       endif()
@@ -177,6 +178,7 @@ endif()
 if (LIBCXXABI_ENABLE_SHARED)
   add_library(cxxabi_shared SHARED ${LIBCXXABI_SOURCES} ${LIBCXXABI_HEADERS})
   target_link_libraries(cxxabi_shared PRIVATE cxx-headers ${LIBCXXABI_SHARED_LIBRARIES} ${LIBCXXABI_LIBRARIES})
+  target_link_libraries(cxxabi_shared PUBLIC cxxabi-headers)
   if (TARGET pstl::ParallelSTL)
     target_link_libraries(cxxabi_shared PUBLIC pstl::ParallelSTL)
   endif()
@@ -191,7 +193,6 @@ if (LIBCXXABI_ENABLE_SHARED)
       SOVERSION "1"
       VERSION "${LIBCXXABI_LIBRARY_VERSION}"
       DEFINE_SYMBOL ""
-      POSITION_INDEPENDENT_CODE ON
   )
 
   list(APPEND LIBCXXABI_BUILD_TARGETS "cxxabi_shared")
@@ -233,6 +234,7 @@ endif()
 if (LIBCXXABI_ENABLE_STATIC)
   add_library(cxxabi_static STATIC ${LIBCXXABI_SOURCES} ${LIBCXXABI_HEADERS})
   target_link_libraries(cxxabi_static PRIVATE cxx-headers ${LIBCXXABI_STATIC_LIBRARIES} ${LIBCXXABI_LIBRARIES})
+  target_link_libraries(cxxabi_static PUBLIC cxxabi-headers)
   if (TARGET pstl::ParallelSTL)
     target_link_libraries(cxxabi_static PUBLIC pstl::ParallelSTL)
   endif()
@@ -244,7 +246,6 @@ if (LIBCXXABI_ENABLE_STATIC)
       COMPILE_FLAGS "${LIBCXXABI_COMPILE_FLAGS}"
       LINK_FLAGS "${LIBCXXABI_LINK_FLAGS}"
       OUTPUT_NAME "c++abi"
-      POSITION_INDEPENDENT_CODE ON
     )
 
   if(LIBCXXABI_HERMETIC_STATIC_LIBRARY)
@@ -300,7 +301,7 @@ endif()
 
 if (NOT CMAKE_CONFIGURATION_TYPES AND LIBCXXABI_INSTALL_LIBRARY)
   add_custom_target(install-cxxabi
-    DEPENDS cxxabi
+    DEPENDS cxxabi install-cxxabi-headers
     COMMAND "${CMAKE_COMMAND}"
             -DCMAKE_INSTALL_COMPONENT=cxxabi
             -P "${LIBCXXABI_BINARY_DIR}/cmake_install.cmake")

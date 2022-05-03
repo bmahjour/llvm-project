@@ -7,34 +7,38 @@
 //===----------------------------------------------------------------------===//
 
 #include "Headers.h"
-#include "Compiler.h"
 #include "Preamble.h"
 #include "SourceCode.h"
-#include "support/Logger.h"
 #include "clang/Basic/SourceLocation.h"
 #include "clang/Basic/SourceManager.h"
 #include "clang/Frontend/CompilerInstance.h"
-#include "clang/Frontend/CompilerInvocation.h"
-#include "clang/Frontend/FrontendActions.h"
 #include "clang/Lex/HeaderSearch.h"
+#include "clang/Lex/PPCallbacks.h"
+#include "clang/Lex/Preprocessor.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Path.h"
+#include <cstring>
 
 namespace clang {
 namespace clangd {
-namespace {
 
-class RecordHeaders : public PPCallbacks {
+const char IWYUPragmaKeep[] = "// IWYU pragma: keep";
+const char IWYUPragmaExport[] = "// IWYU pragma: export";
+
+class IncludeStructure::RecordHeaders : public PPCallbacks,
+                                        public CommentHandler {
 public:
-  RecordHeaders(const SourceManager &SM, IncludeStructure *Out)
-      : SM(SM), Out(Out) {}
+  RecordHeaders(const CompilerInstance &CI, IncludeStructure *Out)
+      : SM(CI.getSourceManager()),
+        HeaderInfo(CI.getPreprocessor().getHeaderSearchInfo()), Out(Out) {}
 
   // Record existing #includes - both written and resolved paths. Only #includes
   // in the main file are collected.
   void InclusionDirective(SourceLocation HashLoc, const Token &IncludeTok,
                           llvm::StringRef FileName, bool IsAngled,
                           CharSourceRange /*FilenameRange*/,
-                          const FileEntry *File, llvm::StringRef /*SearchPath*/,
+                          Optional<FileEntryRef> File,
+                          llvm::StringRef /*SearchPath*/,
                           llvm::StringRef /*RelativePath*/,
                           const clang::Module * /*Imported*/,
                           SrcMgr::CharacteristicKind FileKind) override {
@@ -50,25 +54,39 @@ public:
       auto &Inc = Out->MainFileIncludes.back();
       Inc.Written =
           (IsAngled ? "<" + FileName + ">" : "\"" + FileName + "\"").str();
-      Inc.Resolved = std::string(File ? File->tryGetRealPathName() : "");
+      Inc.Resolved =
+          std::string(File ? File->getFileEntry().tryGetRealPathName() : "");
       Inc.HashOffset = SM.getFileOffset(HashLoc);
       Inc.HashLine =
           SM.getLineNumber(SM.getFileID(HashLoc), Inc.HashOffset) - 1;
       Inc.FileKind = FileKind;
       Inc.Directive = IncludeTok.getIdentifierInfo()->getPPKeywordID();
+      if (LastPragmaKeepInMainFileLine == Inc.HashLine)
+        Inc.BehindPragmaKeep = true;
+      if (File) {
+        IncludeStructure::HeaderID HID = Out->getOrCreateID(*File);
+        Inc.HeaderID = static_cast<unsigned>(HID);
+        if (IsAngled)
+          if (auto StdlibHeader = tooling::stdlib::Header::named(Inc.Written)) {
+            auto &IDs = Out->StdlibHeaders[*StdlibHeader];
+            // Few physical files for one stdlib header name, linear scan is ok.
+            if (!llvm::is_contained(IDs, HID))
+              IDs.push_back(HID);
+          }
+      }
     }
 
     // Record include graph (not just for main-file includes)
     if (File) {
-      auto *IncludingFileEntry = SM.getFileEntryForID(SM.getFileID(HashLoc));
+      auto IncludingFileEntry = SM.getFileEntryRefForID(SM.getFileID(HashLoc));
       if (!IncludingFileEntry) {
         assert(SM.getBufferName(HashLoc).startswith("<") &&
                "Expected #include location to be a file or <built-in>");
         // Treat as if included from the main file.
-        IncludingFileEntry = SM.getFileEntryForID(MainFID);
+        IncludingFileEntry = SM.getFileEntryRefForID(MainFID);
       }
-      auto IncludingID = Out->getOrCreateID(IncludingFileEntry, SM),
-           IncludedID = Out->getOrCreateID(File, SM);
+      auto IncludingID = Out->getOrCreateID(*IncludingFileEntry),
+           IncludedID = Out->getOrCreateID(*File);
       Out->IncludeChildren[IncludingID].push_back(IncludedID);
     }
   }
@@ -78,32 +96,82 @@ public:
                    FileID PrevFID) override {
     switch (Reason) {
     case PPCallbacks::EnterFile:
+      ++Level;
       if (BuiltinFile.isInvalid() && SM.isWrittenInBuiltinFile(Loc)) {
         BuiltinFile = SM.getFileID(Loc);
         InBuiltinFile = true;
       }
       break;
-    case PPCallbacks::ExitFile:
+    case PPCallbacks::ExitFile: {
+      --Level;
       if (PrevFID == BuiltinFile)
         InBuiltinFile = false;
+      // At file exit time HeaderSearchInfo is valid and can be used to
+      // determine whether the file was a self-contained header or not.
+      if (const FileEntry *FE = SM.getFileEntryForID(PrevFID)) {
+        // isSelfContainedHeader only returns true once the full header-guard
+        // structure has been seen, i.e. when exiting the *outer* copy of the
+        // file. So last result wins.
+        if (isSelfContainedHeader(FE, PrevFID, SM, HeaderInfo))
+          Out->NonSelfContained.erase(
+              *Out->getID(SM.getFileEntryForID(PrevFID)));
+        else
+          Out->NonSelfContained.insert(
+              *Out->getID(SM.getFileEntryForID(PrevFID)));
+      }
       break;
+    }
     case PPCallbacks::RenameFile:
     case PPCallbacks::SystemHeaderPragma:
       break;
     }
   }
 
+  // Given:
+  //
+  // #include "foo.h"
+  // #include "bar.h" // IWYU pragma: keep
+  //
+  // The order in which the callbacks will be triggered:
+  //
+  // 1. InclusionDirective("foo.h")
+  // 2. HandleComment("// IWYU pragma: keep")
+  // 3. InclusionDirective("bar.h")
+  //
+  // HandleComment will store the last location of "IWYU pragma: keep" (or
+  // export) comment in the main file, so that when InclusionDirective is
+  // called, it will know that the next inclusion is behind the IWYU pragma.
+  bool HandleComment(Preprocessor &PP, SourceRange Range) override {
+    if (!inMainFile() || Range.getBegin().isMacroID())
+      return false;
+    bool Err = false;
+    llvm::StringRef Text = SM.getCharacterData(Range.getBegin(), &Err);
+    if (Err && !Text.consume_front(IWYUPragmaKeep) &&
+        !Text.consume_front(IWYUPragmaExport))
+      return false;
+    unsigned Offset = SM.getFileOffset(Range.getBegin());
+    LastPragmaKeepInMainFileLine =
+        SM.getLineNumber(SM.getFileID(Range.getBegin()), Offset) - 1;
+    return false;
+  }
+
 private:
+  // Keeps track of include depth for the current file. It's 1 for main file.
+  int Level = 0;
+  bool inMainFile() const { return Level == 1; }
+
   const SourceManager &SM;
+  HeaderSearch &HeaderInfo;
   // Set after entering the <built-in> file.
   FileID BuiltinFile;
   // Indicates whether <built-in> file is part of include stack.
   bool InBuiltinFile = false;
 
   IncludeStructure *Out;
-};
 
-} // namespace
+  // The last line "IWYU pragma: keep" was seen in the main file, 0-indexed.
+  int LastPragmaKeepInMainFileLine = -1;
+};
 
 bool isLiteralInclude(llvm::StringRef Include) {
   return Include.startswith("<") || Include.startswith("\"");
@@ -149,17 +217,18 @@ llvm::SmallVector<llvm::StringRef, 1> getRankedIncludes(const Symbol &Sym) {
   return Headers;
 }
 
-std::unique_ptr<PPCallbacks>
-collectIncludeStructureCallback(const SourceManager &SM,
-                                IncludeStructure *Out) {
-  return std::make_unique<RecordHeaders>(SM, Out);
+void IncludeStructure::collect(const CompilerInstance &CI) {
+  auto &SM = CI.getSourceManager();
+  MainFileEntry = SM.getFileEntryForID(SM.getMainFileID());
+  auto Collector = std::make_unique<RecordHeaders>(CI, this);
+  CI.getPreprocessor().addCommentHandler(Collector.get());
+  CI.getPreprocessor().addPPCallbacks(std::move(Collector));
 }
 
 llvm::Optional<IncludeStructure::HeaderID>
-IncludeStructure::getID(const FileEntry *Entry,
-                        const SourceManager &SM) const {
+IncludeStructure::getID(const FileEntry *Entry) const {
   // HeaderID of the main file is always 0;
-  if (SM.getMainFileID() == SM.translateFile(Entry)) {
+  if (Entry == MainFileEntry) {
     return static_cast<IncludeStructure::HeaderID>(0u);
   }
   auto It = UIDToIndex.find(Entry->getUniqueID());
@@ -169,22 +238,22 @@ IncludeStructure::getID(const FileEntry *Entry,
 }
 
 IncludeStructure::HeaderID
-IncludeStructure::getOrCreateID(const FileEntry *Entry,
-                                const SourceManager &SM) {
-  // Main file's FileID was not known at IncludeStructure creation time.
-  if (SM.getMainFileID() == SM.translateFile(Entry)) {
-    UIDToIndex[Entry->getUniqueID()] =
-        static_cast<IncludeStructure::HeaderID>(0u);
+IncludeStructure::getOrCreateID(FileEntryRef Entry) {
+  // Main file's FileEntry was not known at IncludeStructure creation time.
+  if (&Entry.getFileEntry() == MainFileEntry) {
+    if (RealPathNames.front().empty())
+      RealPathNames.front() = MainFileEntry->tryGetRealPathName().str();
+    return MainFileID;
   }
   auto R = UIDToIndex.try_emplace(
-      Entry->getUniqueID(),
+      Entry.getUniqueID(),
       static_cast<IncludeStructure::HeaderID>(RealPathNames.size()));
   if (R.second)
     RealPathNames.emplace_back();
   IncludeStructure::HeaderID Result = R.first->getSecond();
   std::string &RealPathName = RealPathNames[static_cast<unsigned>(Result)];
   if (RealPathName.empty())
-    RealPathName = Entry->tryGetRealPathName().str();
+    RealPathName = Entry.getFileEntry().tryGetRealPathName().str();
   return Result;
 }
 
@@ -288,5 +357,6 @@ bool operator==(const Inclusion &LHS, const Inclusion &RHS) {
          std::tie(RHS.Directive, RHS.FileKind, RHS.HashOffset, RHS.HashLine,
                   RHS.Resolved, RHS.Written);
 }
+
 } // namespace clangd
 } // namespace clang

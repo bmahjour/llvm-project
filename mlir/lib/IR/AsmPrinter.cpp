@@ -16,6 +16,7 @@
 #include "mlir/IR/AsmState.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinDialect.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Dialect.h"
 #include "mlir/IR/DialectImplementation.h"
@@ -24,6 +25,7 @@
 #include "mlir/IR/OpImplementation.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/SubElementInterfaces.h"
+#include "mlir/IR/Verifier.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/MapVector.h"
@@ -39,15 +41,12 @@
 #include "llvm/Support/Endian.h"
 #include "llvm/Support/Regex.h"
 #include "llvm/Support/SaveAndRestore.h"
+#include "llvm/Support/Threading.h"
 
 #include <tuple>
 
 using namespace mlir;
 using namespace mlir::detail;
-
-void Identifier::print(raw_ostream &os) const { os << str(); }
-
-void Identifier::dump() const { print(llvm::errs()); }
 
 void OperationName::print(raw_ostream &os) const { os << getStringRef(); }
 
@@ -57,9 +56,9 @@ void OperationName::dump() const { print(llvm::errs()); }
 // AsmParser
 //===--------------------------------------------------------------------===//
 
-AsmParser::~AsmParser() {}
-DialectAsmParser::~DialectAsmParser() {}
-OpAsmParser::~OpAsmParser() {}
+AsmParser::~AsmParser() = default;
+DialectAsmParser::~DialectAsmParser() = default;
+OpAsmParser::~OpAsmParser() = default;
 
 MLIRContext *AsmParser::getContext() const { return getBuilder().getContext(); }
 
@@ -67,13 +66,13 @@ MLIRContext *AsmParser::getContext() const { return getBuilder().getContext(); }
 // DialectAsmPrinter
 //===----------------------------------------------------------------------===//
 
-DialectAsmPrinter::~DialectAsmPrinter() {}
+DialectAsmPrinter::~DialectAsmPrinter() = default;
 
 //===----------------------------------------------------------------------===//
 // OpAsmPrinter
 //===----------------------------------------------------------------------===//
 
-OpAsmPrinter::~OpAsmPrinter() {}
+OpAsmPrinter::~OpAsmPrinter() = default;
 
 void OpAsmPrinter::printFunctionalType(Operation *op) {
   auto &os = getStream();
@@ -144,12 +143,22 @@ struct AsmPrinterOptions {
       "mlir-print-op-generic", llvm::cl::init(false),
       llvm::cl::desc("Print the generic op form"), llvm::cl::Hidden};
 
+  llvm::cl::opt<bool> assumeVerifiedOpt{
+      "mlir-print-assume-verified", llvm::cl::init(false),
+      llvm::cl::desc("Skip op verification when using custom printers"),
+      llvm::cl::Hidden};
+
   llvm::cl::opt<bool> printLocalScopeOpt{
       "mlir-print-local-scope", llvm::cl::init(false),
-      llvm::cl::desc("Print assuming in local scope by default"),
-      llvm::cl::Hidden};
+      llvm::cl::desc("Print with local scope and inline information (eliding "
+                     "aliases for attributes, types, and locations")};
+
+  llvm::cl::opt<bool> printValueUsers{
+      "mlir-print-value-users", llvm::cl::init(false),
+      llvm::cl::desc(
+          "Print users of operation results and block arguments as a comment")};
 };
-} // end anonymous namespace
+} // namespace
 
 static llvm::ManagedStatic<AsmPrinterOptions> clOptions;
 
@@ -163,7 +172,8 @@ void mlir::registerAsmPrinterCLOptions() {
 /// Initialize the printing flags with default supplied by the cl::opts above.
 OpPrintingFlags::OpPrintingFlags()
     : printDebugInfoFlag(false), printDebugInfoPrettyFormFlag(false),
-      printGenericOpFormFlag(false), printLocalScope(false) {
+      printGenericOpFormFlag(false), assumeVerifiedFlag(false),
+      printLocalScope(false), printValueUsersFlag(false) {
   // Initialize based upon command line options, if they are available.
   if (!clOptions.isConstructed())
     return;
@@ -172,7 +182,9 @@ OpPrintingFlags::OpPrintingFlags()
   printDebugInfoFlag = clOptions->printDebugInfoOpt;
   printDebugInfoPrettyFormFlag = clOptions->printPrettyDebugInfoOpt;
   printGenericOpFormFlag = clOptions->printGenericOpFormOpt;
+  assumeVerifiedFlag = clOptions->assumeVerifiedOpt;
   printLocalScope = clOptions->printLocalScopeOpt;
+  printValueUsersFlag = clOptions->printValueUsers;
 }
 
 /// Enable the elision of large elements attributes, by printing a '...'
@@ -199,11 +211,23 @@ OpPrintingFlags &OpPrintingFlags::printGenericOpForm() {
   return *this;
 }
 
+/// Do not verify the operation when using custom operation printers.
+OpPrintingFlags &OpPrintingFlags::assumeVerified() {
+  assumeVerifiedFlag = true;
+  return *this;
+}
+
 /// Use local scope when printing the operation. This allows for using the
 /// printer in a more localized and thread-safe setting, but may not necessarily
 /// be identical of what the IR will look like when dumping the full module.
 OpPrintingFlags &OpPrintingFlags::useLocalScope() {
   printLocalScope = true;
+  return *this;
+}
+
+/// Print users of values as comments.
+OpPrintingFlags &OpPrintingFlags::printValueUsers() {
+  printValueUsersFlag = true;
   return *this;
 }
 
@@ -234,8 +258,18 @@ bool OpPrintingFlags::shouldPrintGenericOpForm() const {
   return printGenericOpFormFlag;
 }
 
+/// Return if operation verification should be skipped.
+bool OpPrintingFlags::shouldAssumeVerified() const {
+  return assumeVerifiedFlag;
+}
+
 /// Return if the printer should use local scope when dumping the IR.
 bool OpPrintingFlags::shouldUseLocalScope() const { return printLocalScope; }
+
+/// Return if the printer should print users of values.
+bool OpPrintingFlags::shouldPrintValueUsers() const {
+  return printValueUsersFlag;
+}
 
 /// Returns true if an ElementsAttr with the given number of elements should be
 /// printed with hex.
@@ -270,7 +304,7 @@ static raw_ostream &operator<<(raw_ostream &os, NewLineCounter &newLine) {
   ++newLine.curLine;
   return os << '\n';
 }
-} // end anonymous namespace
+} // namespace
 
 //===----------------------------------------------------------------------===//
 // AliasInitializer
@@ -386,7 +420,7 @@ public:
     if (!printerFlags.shouldPrintGenericOpForm()) {
       // Check to see if this is a known operation.  If so, use the registered
       // custom printer hook.
-      if (auto *opInfo = op->getAbstractOperation()) {
+      if (auto opInfo = op->getRegisteredInfo()) {
         opInfo->printAssembly(op, *this, /*defaultDialect=*/"");
         return;
       }
@@ -414,7 +448,7 @@ private:
 
     // Consider the attributes of the operation for aliases.
     for (const NamedAttribute &attr : op->getAttrs())
-      printAttribute(attr.second);
+      printAttribute(attr.getValue());
   }
 
   /// Print the given block. If 'printBlockArgs' is false, the arguments of the
@@ -477,6 +511,14 @@ private:
   void printAttributeWithoutType(Attribute attr) override {
     printAttribute(attr);
   }
+  LogicalResult printAlias(Attribute attr) override {
+    initializer.visit(attr);
+    return success();
+  }
+  LogicalResult printAlias(Type type) override {
+    initializer.visit(type);
+    return success();
+  }
 
   /// Print the given set of attributes with names not included within
   /// 'elidedAttrs'.
@@ -486,14 +528,14 @@ private:
       return;
     if (elidedAttrs.empty()) {
       for (const NamedAttribute &attr : attrs)
-        printAttribute(attr.second);
+        printAttribute(attr.getValue());
       return;
     }
     llvm::SmallDenseSet<StringRef> elidedAttrsSet(elidedAttrs.begin(),
                                                   elidedAttrs.end());
     for (const NamedAttribute &attr : attrs)
-      if (!elidedAttrsSet.contains(attr.first.strref()))
-        printAttribute(attr.second);
+      if (!elidedAttrsSet.contains(attr.getName().strref()))
+        printAttribute(attr.getValue());
   }
   void printOptionalAttrDictWithKeyword(
       ArrayRef<NamedAttribute> attrs,
@@ -518,6 +560,7 @@ private:
     // guaranteed to go unused.
     os << "%";
   }
+  void printKeywordOrString(StringRef) override {}
   void printSymbolName(StringRef) override {}
   void printSuccessor(Block *) override {}
   void printSuccessorAndUseList(Block *, ValueRange) override {}
@@ -532,7 +575,7 @@ private:
   /// A dummy output stream.
   mutable llvm::raw_null_ostream os;
 };
-} // end anonymous namespace
+} // namespace
 
 /// Sanitize the given name such that it can be used as a valid identifier. If
 /// the string needs to be modified in any way, the provided buffer is used to
@@ -739,7 +782,7 @@ private:
   /// An allocator used for alias names.
   llvm::BumpPtrAllocator aliasAllocator;
 };
-} // end anonymous namespace
+} // namespace
 
 void AliasState::initialize(
     Operation *op, const OpPrintingFlags &printerFlags,
@@ -785,26 +828,35 @@ void AliasState::printAliases(raw_ostream &os, NewLineCounter &newLine,
 //===----------------------------------------------------------------------===//
 
 namespace {
+/// Info about block printing: a number which is its position in the visitation
+/// order, and a name that is used to print reference to it, e.g. ^bb42.
+struct BlockInfo {
+  int ordering;
+  StringRef name;
+};
+
 /// This class manages the state of SSA value names.
 class SSANameState {
 public:
   /// A sentinel value used for values with names set.
   enum : unsigned { NameSentinel = ~0U };
 
-  SSANameState(Operation *op, const OpPrintingFlags &printerFlags,
-               DialectInterfaceCollection<OpAsmDialectInterface> &interfaces);
+  SSANameState(Operation *op, const OpPrintingFlags &printerFlags);
 
   /// Print the SSA identifier for the given value to 'stream'. If
   /// 'printResultNo' is true, it also presents the result number ('#' number)
   /// of this value.
   void printValueID(Value value, bool printResultNo, raw_ostream &stream) const;
 
+  /// Print the operation identifier.
+  void printOperationID(Operation *op, raw_ostream &stream) const;
+
   /// Return the result indices for each of the result groups registered by this
   /// operation, or empty if none exist.
   ArrayRef<int> getOpResultGroups(Operation *op);
 
-  /// Get the ID for the given block.
-  unsigned getBlockID(Block *block);
+  /// Get the info for the given block.
+  BlockInfo getBlockInfo(Block *block);
 
   /// Renumber the arguments for the specified region to the same names as the
   /// SSA values in namesToUse. See OperationPrinter::shadowRegionArgs for
@@ -836,13 +888,18 @@ private:
   DenseMap<Value, unsigned> valueIDs;
   DenseMap<Value, StringRef> valueNames;
 
+  /// When printing users of values, an operation without a result might
+  /// be the user. This map holds ids for such operations.
+  DenseMap<Operation *, unsigned> operationIDs;
+
   /// This is a map of operations that contain multiple named result groups,
   /// i.e. there may be multiple names for the results of the operation. The
   /// value of this map are the result numbers that start a result group.
   DenseMap<Operation *, SmallVector<int, 1>> opResultGroups;
 
-  /// This is the block ID for each block in the current.
-  DenseMap<Block *, unsigned> blockIDs;
+  /// This maps blocks to there visitation number in the current region as well
+  /// as the string representing their name.
+  DenseMap<Block *, BlockInfo> blockNames;
 
   /// This keeps track of all of the non-numeric names that are in flight,
   /// allowing us to check for duplicates.
@@ -860,15 +917,12 @@ private:
   /// These are the printing flags.  They control, eg., whether to print in
   /// generic form.
   OpPrintingFlags printerFlags;
-
-  DialectInterfaceCollection<OpAsmDialectInterface> &interfaces;
 };
-} // end anonymous namespace
+} // namespace
 
 SSANameState::SSANameState(
-    Operation *op, const OpPrintingFlags &printerFlags,
-    DialectInterfaceCollection<OpAsmDialectInterface> &interfaces)
-    : printerFlags(printerFlags), interfaces(interfaces) {
+    Operation *op, const OpPrintingFlags &printerFlags)
+    : printerFlags(printerFlags) {
   llvm::SaveAndRestore<unsigned> valueIDSaver(nextValueID);
   llvm::SaveAndRestore<unsigned> argumentIDSaver(nextArgumentID);
   llvm::SaveAndRestore<unsigned> conflictIDSaver(nextConflictID);
@@ -929,7 +983,7 @@ SSANameState::SSANameState(
 void SSANameState::printValueID(Value value, bool printResultNo,
                                 raw_ostream &stream) const {
   if (!value) {
-    stream << "<<NULL>>";
+    stream << "<<NULL VALUE>>";
     return;
   }
 
@@ -960,14 +1014,24 @@ void SSANameState::printValueID(Value value, bool printResultNo,
     stream << '#' << resultNo;
 }
 
+void SSANameState::printOperationID(Operation *op, raw_ostream &stream) const {
+  auto it = operationIDs.find(op);
+  if (it == operationIDs.end()) {
+    stream << "<<UNKOWN OPERATION>>";
+  } else {
+    stream << '%' << it->second;
+  }
+}
+
 ArrayRef<int> SSANameState::getOpResultGroups(Operation *op) {
   auto it = opResultGroups.find(op);
   return it == opResultGroups.end() ? ArrayRef<int>() : it->second;
 }
 
-unsigned SSANameState::getBlockID(Block *block) {
-  auto it = blockIDs.find(block);
-  return it != blockIDs.end() ? it->second : NameSentinel;
+BlockInfo SSANameState::getBlockInfo(Block *block) {
+  auto it = blockNames.find(block);
+  BlockInfo invalidBlock{-1, "INVALIDBLOCK"};
+  return it != blockNames.end() ? it->second : invalidBlock;
 }
 
 void SSANameState::shadowRegionArgs(Region &region, ValueRange namesToUse) {
@@ -1000,34 +1064,43 @@ void SSANameState::shadowRegionArgs(Region &region, ValueRange namesToUse) {
 }
 
 void SSANameState::numberValuesInRegion(Region &region) {
+  auto setBlockArgNameFn = [&](Value arg, StringRef name) {
+    assert(!valueIDs.count(arg) && "arg numbered multiple times");
+    assert(arg.cast<BlockArgument>().getOwner()->getParent() == &region &&
+           "arg not defined in current region");
+    setValueName(arg, name);
+  };
+
+  if (!printerFlags.shouldPrintGenericOpForm()) {
+    if (Operation *op = region.getParentOp()) {
+      if (auto asmInterface = dyn_cast<OpAsmOpInterface>(op))
+        asmInterface.getAsmBlockArgumentNames(region, setBlockArgNameFn);
+    }
+  }
+
   // Number the values within this region in a breadth-first order.
   unsigned nextBlockID = 0;
   for (auto &block : region) {
     // Each block gets a unique ID, and all of the operations within it get
     // numbered as well.
-    blockIDs[&block] = nextBlockID++;
+    auto blockInfoIt = blockNames.insert({&block, {-1, ""}});
+    if (blockInfoIt.second) {
+      // This block hasn't been named through `getAsmBlockArgumentNames`, use
+      // default `^bbNNN` format.
+      std::string name;
+      llvm::raw_string_ostream(name) << "^bb" << nextBlockID;
+      blockInfoIt.first->second.name = StringRef(name).copy(usedNameAllocator);
+    }
+    blockInfoIt.first->second.ordering = nextBlockID++;
+
     numberValuesInBlock(block);
   }
 }
 
 void SSANameState::numberValuesInBlock(Block &block) {
-  auto setArgNameFn = [&](Value arg, StringRef name) {
-    assert(!valueIDs.count(arg) && "arg numbered multiple times");
-    assert(arg.cast<BlockArgument>().getOwner() == &block &&
-           "arg not defined in 'block'");
-    setValueName(arg, name);
-  };
-
-  bool isEntryBlock = block.isEntryBlock();
-  if (isEntryBlock && !printerFlags.shouldPrintGenericOpForm()) {
-    if (auto *op = block.getParentOp()) {
-      if (auto asmInterface = interfaces.getInterfaceFor(op->getDialect()))
-        asmInterface->getAsmBlockArgumentNames(&block, setArgNameFn);
-    }
-  }
-
   // Number the block arguments. We give entry block arguments a special name
   // 'arg'.
+  bool isEntryBlock = block.isEntryBlock();
   SmallString<32> specialNameBuffer(isEntryBlock ? "arg" : "");
   llvm::raw_svector_ostream specialName(specialNameBuffer);
   for (auto arg : block.getArguments()) {
@@ -1046,11 +1119,6 @@ void SSANameState::numberValuesInBlock(Block &block) {
 }
 
 void SSANameState::numberValuesInOp(Operation &op) {
-  unsigned numResults = op.getNumResults();
-  if (numResults == 0)
-    return;
-  Value resultBegin = op.getResult(0);
-
   // Function used to set the special result names for the operation.
   SmallVector<int, 2> resultGroups(/*Size=*/1, /*Value=*/0);
   auto setResultNameFn = [&](Value result, StringRef name) {
@@ -1062,12 +1130,39 @@ void SSANameState::numberValuesInOp(Operation &op) {
     if (int resultNo = result.cast<OpResult>().getResultNumber())
       resultGroups.push_back(resultNo);
   };
+  // Operations can customize the printing of block names in OpAsmOpInterface.
+  auto setBlockNameFn = [&](Block *block, StringRef name) {
+    assert(block->getParentOp() == &op &&
+           "getAsmBlockArgumentNames callback invoked on a block not directly "
+           "nested under the current operation");
+    assert(!blockNames.count(block) && "block numbered multiple times");
+    SmallString<16> tmpBuffer{"^"};
+    name = sanitizeIdentifier(name, tmpBuffer);
+    if (name.data() != tmpBuffer.data()) {
+      tmpBuffer.append(name);
+      name = tmpBuffer.str();
+    }
+    name = name.copy(usedNameAllocator);
+    blockNames[block] = {-1, name};
+  };
+
   if (!printerFlags.shouldPrintGenericOpForm()) {
-    if (OpAsmOpInterface asmInterface = dyn_cast<OpAsmOpInterface>(&op))
+    if (OpAsmOpInterface asmInterface = dyn_cast<OpAsmOpInterface>(&op)) {
+      asmInterface.getAsmBlockNames(setBlockNameFn);
       asmInterface.getAsmResultNames(setResultNameFn);
-    else if (auto *asmInterface = interfaces.getInterfaceFor(op.getDialect()))
-      asmInterface->getAsmResultNames(&op, setResultNameFn);
+    }
   }
+
+  unsigned numResults = op.getNumResults();
+  if (numResults == 0) {
+    // If value users should be printed, operations with no result need an id.
+    if (printerFlags.shouldPrintValueUsers()) {
+      if (operationIDs.try_emplace(&op, nextValueID).second)
+        ++nextValueID;
+    }
+    return;
+  }
+  Value resultBegin = op.getResult(0);
 
   // If the first result wasn't numbered, give it a default number.
   if (valueIDs.try_emplace(resultBegin, nextValueID).second)
@@ -1099,7 +1194,7 @@ void SSANameState::getResultIDAndNumber(OpResult result, Value &lookupValue,
 
   // Find the correct index using a binary search, as the groups are ordered.
   ArrayRef<int> resultGroups = resultGroupIt->second;
-  auto it = llvm::upper_bound(resultGroups, resultNo);
+  const auto *it = llvm::upper_bound(resultGroups, resultNo);
   int groupResultNo = 0, groupSize = 0;
 
   // If there are no smaller elements, the last result group is the lookup.
@@ -1166,7 +1261,7 @@ class AsmStateImpl {
 public:
   explicit AsmStateImpl(Operation *op, const OpPrintingFlags &printerFlags,
                         AsmState::LocationMap *locationMap)
-      : interfaces(op->getContext()), nameState(op, printerFlags, interfaces),
+      : interfaces(op->getContext()), nameState(op, printerFlags),
         printerFlags(printerFlags), locationMap(locationMap) {}
 
   /// Initialize the alias state to enable the printing of aliases.
@@ -1174,17 +1269,14 @@ public:
     aliasState.initialize(op, printerFlags, interfaces);
   }
 
-  /// Get an instance of the OpAsmDialectInterface for the given dialect, or
-  /// null if one wasn't registered.
-  const OpAsmDialectInterface *getOpAsmInterface(Dialect *dialect) {
-    return interfaces.getInterfaceFor(dialect);
-  }
-
   /// Get the state used for aliases.
   AliasState &getAliasState() { return aliasState; }
 
   /// Get the state used for SSA names.
   SSANameState &getSSANameState() { return nameState; }
+
+  /// Get the printer flags.
+  const OpPrintingFlags &getPrinterFlags() const { return printerFlags; }
 
   /// Register the location, line and column, within the buffer that the given
   /// operation was printed at.
@@ -1209,13 +1301,39 @@ private:
   /// An optional location map to be populated.
   AsmState::LocationMap *locationMap;
 };
-} // end namespace detail
-} // end namespace mlir
+} // namespace detail
+} // namespace mlir
+
+/// Verifies the operation and switches to generic op printing if verification
+/// fails. We need to do this because custom print functions may fail for
+/// invalid ops.
+static OpPrintingFlags verifyOpAndAdjustFlags(Operation *op,
+                                              OpPrintingFlags printerFlags) {
+  if (printerFlags.shouldPrintGenericOpForm() ||
+      printerFlags.shouldAssumeVerified())
+    return printerFlags;
+
+  // Ignore errors emitted by the verifier. We check the thread id to avoid
+  // consuming other threads' errors.
+  auto parentThreadId = llvm::get_threadid();
+  ScopedDiagnosticHandler diagHandler(op->getContext(), [&](Diagnostic &) {
+    return success(parentThreadId == llvm::get_threadid());
+  });
+  if (failed(verify(op)))
+    printerFlags.printGenericOpForm();
+
+  return printerFlags;
+}
 
 AsmState::AsmState(Operation *op, const OpPrintingFlags &printerFlags,
                    LocationMap *locationMap)
-    : impl(std::make_unique<AsmStateImpl>(op, printerFlags, locationMap)) {}
-AsmState::~AsmState() {}
+    : impl(std::make_unique<AsmStateImpl>(
+          op, verifyOpAndAdjustFlags(op, printerFlags), locationMap)) {}
+AsmState::~AsmState() = default;
+
+const OpPrintingFlags &AsmState::getPrinterFlags() const {
+  return impl->getPrinterFlags();
+}
 
 //===----------------------------------------------------------------------===//
 // AsmPrinter::Impl
@@ -1234,8 +1352,8 @@ public:
   raw_ostream &getStream() { return os; }
 
   template <typename Container, typename UnaryFunctor>
-  inline void interleaveComma(const Container &c, UnaryFunctor each_fn) const {
-    llvm::interleaveComma(c, os, each_fn);
+  inline void interleaveComma(const Container &c, UnaryFunctor eachFn) const {
+    llvm::interleaveComma(c, os, eachFn);
   }
 
   /// This enum describes the different kinds of elision for the type of an
@@ -1254,7 +1372,15 @@ public:
   void printAttribute(Attribute attr,
                       AttrTypeElision typeElision = AttrTypeElision::Never);
 
+  /// Print the alias for the given attribute, return failure if no alias could
+  /// be printed.
+  LogicalResult printAlias(Attribute attr);
+
   void printType(Type type);
+
+  /// Print the alias for the given type, return failure if no alias could
+  /// be printed.
+  LogicalResult printAlias(Type type);
 
   /// Print the given location to the stream. If `allowAlias` is true, this
   /// allows for the internal location to use an attribute alias.
@@ -1337,7 +1463,7 @@ void AsmPrinter::Impl::printLocationInternal(LocationAttr loc, bool pretty) {
       })
       .Case<FileLineColLoc>([&](FileLineColLoc loc) {
         if (pretty) {
-          os << loc.getFilename();
+          os << loc.getFilename().getValue();
         } else {
           os << "\"";
           printEscapedString(loc.getFilename(), os);
@@ -1548,18 +1674,30 @@ static void printDialectSymbol(raw_ostream &os, StringRef symPrefix,
 
 /// Returns true if the given string can be represented as a bare identifier.
 static bool isBareIdentifier(StringRef name) {
-  assert(!name.empty() && "invalid name");
-
   // By making this unsigned, the value passed in to isalnum will always be
   // in the range 0-255. This is important when building with MSVC because
   // its implementation will assert. This situation can arise when dealing
   // with UTF-8 multibyte characters.
-  unsigned char firstChar = static_cast<unsigned char>(name[0]);
-  if (!isalpha(firstChar) && firstChar != '_')
+  if (name.empty() || (!isalpha(name[0]) && name[0] != '_'))
     return false;
   return llvm::all_of(name.drop_front(), [](unsigned char c) {
     return isalnum(c) || c == '_' || c == '$' || c == '.';
   });
+}
+
+/// Print the given string as a keyword, or a quoted and escaped string if it
+/// has any special or non-printable characters in it.
+static void printKeywordOrString(StringRef keyword, raw_ostream &os) {
+  // If it can be represented as a bare identifier, write it directly.
+  if (isBareIdentifier(keyword)) {
+    os << keyword;
+    return;
+  }
+
+  // Otherwise, output the keyword wrapped in quotes with proper escaping.
+  os << "\"";
+  printEscapedString(keyword, os);
+  os << '"';
 }
 
 /// Print the given string as a symbol reference. A symbol reference is
@@ -1567,17 +1705,8 @@ static bool isBareIdentifier(StringRef name) {
 /// ""'s and escaped if it has any special or non-printable characters in it.
 static void printSymbolReference(StringRef symbolRef, raw_ostream &os) {
   assert(!symbolRef.empty() && "expected valid symbol reference");
-
-  // If the symbol can be represented as a bare identifier, write it directly.
-  if (isBareIdentifier(symbolRef)) {
-    os << '@' << symbolRef;
-    return;
-  }
-
-  // Otherwise, output the reference wrapped in quotes with proper escaping.
-  os << "@\"";
-  printEscapedString(symbolRef, os);
-  os << '"';
+  os << '@';
+  printKeywordOrString(symbolRef, os);
 }
 
 // Print out a valid ElementsAttr that is succinct and can represent any
@@ -1590,7 +1719,15 @@ static void printSymbolReference(StringRef symbolRef, raw_ostream &os) {
 // accept the string "elided". The first string must be a registered dialect
 // name and the latter must be a hex constant.
 static void printElidedElementsAttr(raw_ostream &os) {
-  os << R"(opaque<"_", "0xDEADBEEF">)";
+  os << R"(opaque<"elided_large_const", "0xDEADBEEF">)";
+}
+
+LogicalResult AsmPrinter::Impl::printAlias(Attribute attr) {
+  return success(state && succeeded(state->getAliasState().getAlias(attr, os)));
+}
+
+LogicalResult AsmPrinter::Impl::printAlias(Type type) {
+  return success(state && succeeded(state->getAliasState().getAlias(type, os)));
 }
 
 void AsmPrinter::Impl::printAttribute(Attribute attr,
@@ -1601,8 +1738,11 @@ void AsmPrinter::Impl::printAttribute(Attribute attr,
   }
 
   // Try to print an alias for this attribute.
-  if (state && succeeded(state->getAliasState().getAlias(attr, os)))
+  if (succeeded(printAlias(attr)))
     return;
+
+  if (!isa<BuiltinDialect>(attr.getDialect()))
+    return printDialectAttribute(attr);
 
   auto attrType = attr.getType();
   if (auto opaqueAttr = attr.dyn_cast<OpaqueAttr>()) {
@@ -1685,7 +1825,7 @@ void AsmPrinter::Impl::printAttribute(Attribute attr,
     if (printerFlags.shouldElideElementsAttr(opaqueAttr)) {
       printElidedElementsAttr(os);
     } else {
-      os << "opaque<\"" << opaqueAttr.getDialect() << "\", \"0x"
+      os << "opaque<" << opaqueAttr.getDialect() << ", \"0x"
          << llvm::toHex(opaqueAttr.getValue()) << "\">";
     }
 
@@ -1724,11 +1864,7 @@ void AsmPrinter::Impl::printAttribute(Attribute attr,
 
   } else if (auto locAttr = attr.dyn_cast<LocationAttr>()) {
     printLocation(locAttr);
-
-  } else {
-    return printDialectAttribute(attr);
   }
-
   // Don't print the type if we must elide it, or if it is a None type.
   if (typeElision != AttrTypeElision::Must && !attrType.isa<NoneType>()) {
     os << " : ";
@@ -1921,7 +2057,7 @@ void AsmPrinter::Impl::printType(Type type) {
         os << ") -> ";
         ArrayRef<Type> results = funcTy.getResults();
         if (results.size() == 1 && !results[0].isa<FunctionType>()) {
-          os << results[0];
+          printType(results[0]);
         } else {
           os << '(';
           interleaveComma(results, [&](Type ty) { printType(ty); });
@@ -1930,9 +2066,21 @@ void AsmPrinter::Impl::printType(Type type) {
       })
       .Case<VectorType>([&](VectorType vectorTy) {
         os << "vector<";
-        for (int64_t dim : vectorTy.getShape())
-          os << dim << 'x';
-        os << vectorTy.getElementType() << '>';
+        auto vShape = vectorTy.getShape();
+        unsigned lastDim = vShape.size();
+        unsigned lastFixedDim = lastDim - vectorTy.getNumScalableDims();
+        unsigned dimIdx = 0;
+        for (dimIdx = 0; dimIdx < lastFixedDim; dimIdx++)
+          os << vShape[dimIdx] << 'x';
+        if (vectorTy.isScalable()) {
+          os << '[';
+          unsigned secondToLastDim = lastDim - 1;
+          for (; dimIdx < secondToLastDim; dimIdx++)
+            os << vShape[dimIdx] << 'x';
+          os << vShape[dimIdx] << "]x";
+        }
+        printType(vectorTy.getElementType());
+        os << '>';
       })
       .Case<RankedTensorType>([&](RankedTensorType tensorTy) {
         os << "tensor<";
@@ -1943,7 +2091,7 @@ void AsmPrinter::Impl::printType(Type type) {
             os << dim;
           os << 'x';
         }
-        os << tensorTy.getElementType();
+        printType(tensorTy.getElementType());
         // Only print the encoding attribute value if set.
         if (tensorTy.getEncoding()) {
           os << ", ";
@@ -1966,9 +2114,9 @@ void AsmPrinter::Impl::printType(Type type) {
           os << 'x';
         }
         printType(memrefTy.getElementType());
-        for (auto map : memrefTy.getAffineMaps()) {
+        if (!memrefTy.getLayout().isIdentity()) {
           os << ", ";
-          printAttribute(AffineMapAttr::get(map));
+          printAttribute(memrefTy.getLayout(), AttrTypeElision::May);
         }
         // Only print the memory space if it is the non-default one.
         if (memrefTy.getMemorySpace()) {
@@ -2030,27 +2178,22 @@ void AsmPrinter::Impl::printOptionalAttrDict(ArrayRef<NamedAttribute> attrs,
   llvm::SmallDenseSet<StringRef> elidedAttrsSet(elidedAttrs.begin(),
                                                 elidedAttrs.end());
   auto filteredAttrs = llvm::make_filter_range(attrs, [&](NamedAttribute attr) {
-    return !elidedAttrsSet.contains(attr.first.strref());
+    return !elidedAttrsSet.contains(attr.getName().strref());
   });
   if (!filteredAttrs.empty())
     printFilteredAttributesFn(filteredAttrs);
 }
 
 void AsmPrinter::Impl::printNamedAttribute(NamedAttribute attr) {
-  if (isBareIdentifier(attr.first)) {
-    os << attr.first;
-  } else {
-    os << '"';
-    printEscapedString(attr.first.strref(), os);
-    os << '"';
-  }
+  // Print the name without quotes if possible.
+  ::printKeywordOrString(attr.getName().strref(), os);
 
   // Pretty printing elides the attribute value for unit attributes.
-  if (attr.second.isa<UnitAttr>())
+  if (attr.getValue().isa<UnitAttr>())
     return;
 
   os << " = ";
-  printAttribute(attr.second);
+  printAttribute(attr.getValue());
 }
 
 void AsmPrinter::Impl::printDialectAttribute(Attribute attr) {
@@ -2085,7 +2228,7 @@ void AsmPrinter::Impl::printDialectType(Type type) {
 // AsmPrinter
 //===--------------------------------------------------------------------===//
 
-AsmPrinter::~AsmPrinter() {}
+AsmPrinter::~AsmPrinter() = default;
 
 raw_ostream &AsmPrinter::getStream() const {
   assert(impl && "expected AsmPrinter::getStream to be overriden");
@@ -2108,10 +2251,25 @@ void AsmPrinter::printAttribute(Attribute attr) {
   impl->printAttribute(attr);
 }
 
+LogicalResult AsmPrinter::printAlias(Attribute attr) {
+  assert(impl && "expected AsmPrinter::printAlias to be overriden");
+  return impl->printAlias(attr);
+}
+
+LogicalResult AsmPrinter::printAlias(Type type) {
+  assert(impl && "expected AsmPrinter::printAlias to be overriden");
+  return impl->printAlias(type);
+}
+
 void AsmPrinter::printAttributeWithoutType(Attribute attr) {
   assert(impl &&
          "expected AsmPrinter::printAttributeWithoutType to be overriden");
   impl->printAttribute(attr, Impl::AttrTypeElision::Must);
+}
+
+void AsmPrinter::printKeywordOrString(StringRef keyword) {
+  assert(impl && "expected AsmPrinter::printKeywordOrString to be overriden");
+  ::printKeywordOrString(keyword, impl->getStream());
 }
 
 void AsmPrinter::printSymbolName(StringRef symbolRef) {
@@ -2335,9 +2493,9 @@ public:
   using Impl = AsmPrinter::Impl;
   using Impl::printType;
 
-  explicit OperationPrinter(raw_ostream &os, OpPrintingFlags flags,
-                            AsmStateImpl &state)
-      : Impl(os, flags, &state), OpAsmPrinter(static_cast<Impl &>(*this)) {}
+  explicit OperationPrinter(raw_ostream &os, AsmStateImpl &state)
+      : Impl(os, state.getPrinterFlags(), &state),
+        OpAsmPrinter(static_cast<Impl &>(*this)) {}
 
   /// Print the given top-level operation.
   void printTopLevelOperation(Operation *op);
@@ -2361,6 +2519,10 @@ public:
   /// Print the ID of the given value, optionally with its result number.
   void printValueID(Value value, bool printResultNo = true,
                     raw_ostream *streamOverride = nullptr) const;
+
+  /// Print the ID of the given operation.
+  void printOperationID(Operation *op,
+                        raw_ostream *streamOverride = nullptr) const;
 
   //===--------------------------------------------------------------------===//
   // OpAsmPrinter methods
@@ -2430,6 +2592,19 @@ public:
   void printAffineExprOfSSAIds(AffineExpr expr, ValueRange dimOperands,
                                ValueRange symOperands) override;
 
+  /// Print users of this operation or id of this operation if it has no result.
+  void printUsersComment(Operation *op);
+
+  /// Print users of this block arg.
+  void printUsersComment(BlockArgument arg);
+
+  /// Print the users of a value.
+  void printValueUsers(Value value);
+
+  /// Print either the ids of the result values or the id of the operation if
+  /// the operation has no results.
+  void printUserIDs(Operation *user, bool prefixComma = false);
+
 private:
   // Contains the stack of default dialects to use when printing regions.
   // A new dialect is pushed to the stack before parsing regions nested under an
@@ -2444,7 +2619,7 @@ private:
   // This is the current indentation level for nested structures.
   unsigned currentIndent = 0;
 };
-} // end anonymous namespace
+} // namespace
 
 void OperationPrinter::printTopLevelOperation(Operation *op) {
   // Output the aliases at the top level that can't be deferred.
@@ -2483,6 +2658,8 @@ void OperationPrinter::print(Operation *op) {
   os.indent(currentIndent);
   printOperation(op);
   printTrailingLocation(op->getLoc());
+  if (printerFlags.shouldPrintValueUsers())
+    printUsersComment(op);
 }
 
 void OperationPrinter::printOperation(Operation *op) {
@@ -2514,9 +2691,9 @@ void OperationPrinter::printOperation(Operation *op) {
 
   // If requested, always print the generic form.
   if (!printerFlags.shouldPrintGenericOpForm()) {
-    // Check to see if this is a known operation.  If so, use the registered
+    // Check to see if this is a known operation. If so, use the registered
     // custom printer hook.
-    if (auto *opInfo = op->getAbstractOperation()) {
+    if (auto opInfo = op->getRegisteredInfo()) {
       opInfo->printAssembly(op, *this, defaultDialectStack.back());
       return;
     }
@@ -2536,6 +2713,80 @@ void OperationPrinter::printOperation(Operation *op) {
 
   // Otherwise print with the generic assembly form.
   printGenericOp(op, /*printOpName=*/true);
+}
+
+void OperationPrinter::printUsersComment(Operation *op) {
+  unsigned numResults = op->getNumResults();
+  if (!numResults && op->getNumOperands()) {
+    os << " // id: ";
+    printOperationID(op);
+  } else if (numResults && op->use_empty()) {
+    os << " // unused";
+  } else if (numResults && !op->use_empty()) {
+    // Print "user" if the operation has one result used to compute one other
+    // result, or is used in one operation with no result.
+    unsigned usedInNResults = 0;
+    unsigned usedInNOperations = 0;
+    SmallPtrSet<Operation *, 1> userSet;
+    for (Operation *user : op->getUsers()) {
+      if (userSet.insert(user).second) {
+        ++usedInNOperations;
+        usedInNResults += user->getNumResults();
+      }
+    }
+
+    // We already know that users is not empty.
+    bool exactlyOneUniqueUse =
+        usedInNResults <= 1 && usedInNOperations <= 1 && numResults == 1;
+    os << " // " << (exactlyOneUniqueUse ? "user" : "users") << ": ";
+    bool shouldPrintBrackets = numResults > 1;
+    auto printOpResult = [&](OpResult opResult) {
+      if (shouldPrintBrackets)
+        os << "(";
+      printValueUsers(opResult);
+      if (shouldPrintBrackets)
+        os << ")";
+    };
+
+    interleaveComma(op->getResults(), printOpResult);
+  }
+}
+
+void OperationPrinter::printUsersComment(BlockArgument arg) {
+  os << "// ";
+  printValueID(arg);
+  if (arg.use_empty()) {
+    os << " is unused";
+  } else {
+    os << " is used by ";
+    printValueUsers(arg);
+  }
+  os << newLine;
+}
+
+void OperationPrinter::printValueUsers(Value value) {
+  if (value.use_empty())
+    os << "unused";
+
+  // One value might be used as the operand of an operation more than once.
+  // Only print the operations results once in that case.
+  SmallPtrSet<Operation *, 1> userSet;
+  for (auto &indexedUser : enumerate(value.getUsers())) {
+    if (userSet.insert(indexedUser.value()).second)
+      printUserIDs(indexedUser.value(), indexedUser.index());
+  }
+}
+
+void OperationPrinter::printUserIDs(Operation *user, bool prefixComma) {
+  if (prefixComma)
+    os << ", ";
+
+  if (!user->getNumResults()) {
+    printOperationID(user);
+  } else {
+    interleaveComma(user->getResults(),
+                    [this](Value result) { printValueID(result); });
+  }
 }
 
 void OperationPrinter::printGenericOp(Operation *op, bool printOpName) {
@@ -2575,11 +2826,7 @@ void OperationPrinter::printGenericOp(Operation *op, bool printOpName) {
 }
 
 void OperationPrinter::printBlockName(Block *block) {
-  auto id = state->getSSANameState().getBlockID(block);
-  if (id != SSANameState::NameSentinel)
-    os << "^bb" << id;
-  else
-    os << "^INVALIDBLOCK";
+  os << state->getSSANameState().getBlockInfo(block).name;
 }
 
 void OperationPrinter::print(Block *block, bool printBlockArgs,
@@ -2607,28 +2854,37 @@ void OperationPrinter::print(Block *block, bool printBlockArgs,
     if (!block->getParent()) {
       os << "  // block is not in a region!";
     } else if (block->hasNoPredecessors()) {
-      os << "  // no predecessors";
+      if (!block->isEntryBlock())
+        os << "  // no predecessors";
     } else if (auto *pred = block->getSinglePredecessor()) {
       os << "  // pred: ";
       printBlockName(pred);
     } else {
-      // We want to print the predecessors in increasing numeric order, not in
+      // We want to print the predecessors in a stable order, not in
       // whatever order the use-list is in, so gather and sort them.
-      SmallVector<std::pair<unsigned, Block *>, 4> predIDs;
+      SmallVector<BlockInfo, 4> predIDs;
       for (auto *pred : block->getPredecessors())
-        predIDs.push_back({state->getSSANameState().getBlockID(pred), pred});
-      llvm::array_pod_sort(predIDs.begin(), predIDs.end());
+        predIDs.push_back(state->getSSANameState().getBlockInfo(pred));
+      llvm::sort(predIDs, [](BlockInfo lhs, BlockInfo rhs) {
+        return lhs.ordering < rhs.ordering;
+      });
 
       os << "  // " << predIDs.size() << " preds: ";
 
-      interleaveComma(predIDs, [&](std::pair<unsigned, Block *> pred) {
-        printBlockName(pred.second);
-      });
+      interleaveComma(predIDs, [&](BlockInfo pred) { os << pred.name; });
     }
     os << newLine;
   }
 
   currentIndent += indentWidth;
+
+  if (printerFlags.shouldPrintValueUsers()) {
+    for (BlockArgument arg : block->getArguments()) {
+      os.indent(currentIndent);
+      printUsersComment(arg);
+    }
+  }
+
   bool hasTerminator =
       !block->empty() && block->back().hasTrait<OpTrait::IsTerminator>();
   auto range = llvm::make_range(
@@ -2646,6 +2902,12 @@ void OperationPrinter::printValueID(Value value, bool printResultNo,
                                     raw_ostream *streamOverride) const {
   state->getSSANameState().printValueID(value, printResultNo,
                                         streamOverride ? *streamOverride : os);
+}
+
+void OperationPrinter::printOperationID(Operation *op,
+                                        raw_ostream *streamOverride) const {
+  state->getSSANameState().printOperationID(op, streamOverride ? *streamOverride
+                                                               : os);
 }
 
 void OperationPrinter::printSuccessor(Block *successor) {
@@ -2670,7 +2932,7 @@ void OperationPrinter::printSuccessorAndUseList(Block *successor,
 void OperationPrinter::printRegion(Region &region, bool printEntryBlockArgs,
                                    bool printBlockTerminators,
                                    bool printEmptyBlock) {
-  os << " {" << newLine;
+  os << "{" << newLine;
   if (!region.empty()) {
     auto restoreDefaultDialect =
         llvm::make_scope_exit([&]() { defaultDialectStack.pop_back(); });
@@ -2779,15 +3041,26 @@ void IntegerSet::print(raw_ostream &os) const {
   AsmPrinter::Impl(os).printIntegerSet(*this);
 }
 
-void Value::print(raw_ostream &os) {
+void Value::print(raw_ostream &os) { print(os, OpPrintingFlags()); }
+void Value::print(raw_ostream &os, const OpPrintingFlags &flags) {
+  if (!impl) {
+    os << "<<NULL VALUE>>";
+    return;
+  }
+
   if (auto *op = getDefiningOp())
-    return op->print(os);
+    return op->print(os, flags);
   // TODO: Improve BlockArgument print'ing.
   BlockArgument arg = this->cast<BlockArgument>();
   os << "<block argument> of type '" << arg.getType()
      << "' at index: " << arg.getArgNumber();
 }
 void Value::print(raw_ostream &os, AsmState &state) {
+  if (!impl) {
+    os << "<<NULL VALUE>>";
+    return;
+  }
+
   if (auto *op = getDefiningOp())
     return op->print(os, state);
 
@@ -2816,7 +3089,7 @@ void Operation::print(raw_ostream &os, const OpPrintingFlags &printerFlags) {
   if (!getParent() && !printerFlags.shouldUseLocalScope()) {
     AsmState state(this, printerFlags);
     state.getImpl().initializeAliases(this);
-    print(os, state, printerFlags);
+    print(os, state);
     return;
   }
 
@@ -2837,12 +3110,11 @@ void Operation::print(raw_ostream &os, const OpPrintingFlags &printerFlags) {
   } while (true);
 
   AsmState state(op, printerFlags);
-  print(os, state, printerFlags);
+  print(os, state);
 }
-void Operation::print(raw_ostream &os, AsmState &state,
-                      const OpPrintingFlags &flags) {
-  OperationPrinter printer(os, flags, state.getImpl());
-  if (!getParent() && !flags.shouldUseLocalScope())
+void Operation::print(raw_ostream &os, AsmState &state) {
+  OperationPrinter printer(os, state.getImpl());
+  if (!getParent() && !state.getPrinterFlags().shouldUseLocalScope())
     printer.printTopLevelOperation(this);
   else
     printer.print(this);
@@ -2867,7 +3139,7 @@ void Block::print(raw_ostream &os) {
   print(os, state);
 }
 void Block::print(raw_ostream &os, AsmState &state) {
-  OperationPrinter(os, /*flags=*/llvm::None, state.getImpl()).print(this);
+  OperationPrinter(os, state.getImpl()).print(this);
 }
 
 void Block::dump() { print(llvm::errs()); }
@@ -2883,6 +3155,6 @@ void Block::printAsOperand(raw_ostream &os, bool printType) {
   printAsOperand(os, state);
 }
 void Block::printAsOperand(raw_ostream &os, AsmState &state) {
-  OperationPrinter printer(os, /*flags=*/llvm::None, state.getImpl());
+  OperationPrinter printer(os, state.getImpl());
   printer.printBlockName(this);
 }

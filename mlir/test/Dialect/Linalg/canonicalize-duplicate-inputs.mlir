@@ -6,16 +6,16 @@
 
 // CHECK: #[[$MAP:.*]] = affine_map<(d0) -> (d0)>
 // CHECK-LABEL: @basic
-func @basic(%arg0: tensor<?xf32>) -> tensor<?xf32> {
+func.func @basic(%arg0: tensor<?xf32>) -> tensor<?xf32> {
   // CHECK: linalg.generic{{.*}}[#[[$MAP]], #[[$MAP]]]
   // CHECK:   attrs =  {someattr}
   // CHECK:   ^bb0(%[[BBARG:.*]]: f32, %{{.*}}: f32):
-  // CHECK:     addf %[[BBARG]], %[[BBARG]]
+  // CHECK:     arith.addf %[[BBARG]], %[[BBARG]]
   %0 = linalg.generic {indexing_maps = [#map, #map, #map], iterator_types = ["parallel"]}
      ins(%arg0, %arg0 : tensor<?xf32>, tensor<?xf32>)
     outs(%arg0 : tensor<?xf32>) attrs = {someattr} {
   ^bb0(%arg1: f32, %arg2: f32, %arg3: f32):
-    %1 = addf %arg1, %arg2 : f32
+    %1 = arith.addf %arg1, %arg2 : f32
     linalg.yield %1 : f32
   } -> tensor<?xf32>
   return %0 : tensor<?xf32>
@@ -32,13 +32,13 @@ func @basic(%arg0: tensor<?xf32>) -> tensor<?xf32> {
 // CHECK-DAG: #[[$MAP0:.*]] = affine_map<(d0, d1) -> (d0, d1)>
 // CHECK-DAG: #[[$MAP1:.*]] = affine_map<(d0, d1) -> (d1, d0)>
 // CHECK-LABEL: @distinct_affine_maps
-func @distinct_affine_maps(%arg0: tensor<?x?xf32>) -> tensor<?x?xf32> {
+func.func @distinct_affine_maps(%arg0: tensor<?x?xf32>) -> tensor<?x?xf32> {
   // CHECK: linalg.generic{{.*}}[#[[$MAP0]], #[[$MAP1]], #[[$MAP0]]]
   %0 = linalg.generic {indexing_maps = [#map0, #map1, #map0], iterator_types = ["parallel", "parallel"]}
      ins(%arg0, %arg0 : tensor<?x?xf32>, tensor<?x?xf32>)
     outs(%arg0 : tensor<?x?xf32>) {
   ^bb0(%arg1: f32, %arg2: f32, %arg3: f32):
-    %1 = addf %arg1, %arg2 : f32
+    %1 = arith.addf %arg1, %arg2 : f32
     linalg.yield %1 : f32
   } -> tensor<?x?xf32>
   return %0 : tensor<?x?xf32>
@@ -55,7 +55,7 @@ func @distinct_affine_maps(%arg0: tensor<?x?xf32>) -> tensor<?x?xf32> {
 // CHECK-DAG: #[[$MAP0:.*]] = affine_map<(d0, d1) -> (d0, d1)>
 // CHECK-DAG: #[[$MAP1:.*]] = affine_map<(d0, d1) -> (d1, d0)>
 // CHECK-LABEL: @mixed_redundant_non_redundant
-func @mixed_redundant_non_redundant(%arg0: tensor<?x?xf32>) -> tensor<?x?xf32> {
+func.func @mixed_redundant_non_redundant(%arg0: tensor<?x?xf32>) -> tensor<?x?xf32> {
   // CHECK: linalg.generic{{.*}}[#[[$MAP0]], #[[$MAP1]], #[[$MAP0]]]
   // CHECK:   ^bb0(%[[BBARG0:.*]]: f32, %[[BBARG1:.*]]: f32, %{{[a-zA-Z0-9]+}}: f32):
   // CHECK:     "test.elementwise_mappable"(%[[BBARG0]], %[[BBARG1]], %[[BBARG0]])
@@ -77,7 +77,7 @@ func @mixed_redundant_non_redundant(%arg0: tensor<?x?xf32>) -> tensor<?x?xf32> {
 
 // CHECK: #[[$MAP:.*]] = affine_map<(d0) -> (d0)>
 // CHECK-LABEL: @multiple_different_redundant_args
-func @multiple_different_redundant_args(%arg0: tensor<?xf32>, %arg1: tensor<?xf32>) -> tensor<?xf32> {
+func.func @multiple_different_redundant_args(%arg0: tensor<?xf32>, %arg1: tensor<?xf32>) -> tensor<?xf32> {
   // CHECK: linalg.generic{{.*}}[#[[$MAP]], #[[$MAP]], #[[$MAP]]]
   // CHECK:   ^bb0(%[[BBARG0:.*]]: f32, %[[BBARG1:.*]]: f32, %{{[a-zA-Z0-9]+}}: f32):
   // CHECK:     "test.elementwise_mappable"(%[[BBARG0]], %[[BBARG1]], %[[BBARG0]], %[[BBARG1]])

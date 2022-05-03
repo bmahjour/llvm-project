@@ -112,6 +112,29 @@ class TargetAPITestCase(TestBase):
         self.assertIsNotNone(data_section2)
         self.assertEqual(data_section.name, data_section2.name)
 
+    def test_get_ABIName(self):
+        d = {'EXE': 'b.out'}
+        self.build(dictionary=d)
+        self.setTearDownCleanup(dictionary=d)
+        target = self.create_simple_target('b.out')
+
+        abi_pre_launch = target.GetABIName()
+        self.assertTrue(len(abi_pre_launch) != 0, "Got an ABI string")
+        
+        breakpoint = target.BreakpointCreateByLocation(
+            "main.c", self.line_main)
+        self.assertTrue(breakpoint, VALID_BREAKPOINT)
+
+        # Put debugger into synchronous mode so when we target.LaunchSimple returns
+        # it will guaranteed to be at the breakpoint
+        self.dbg.SetAsync(False)
+
+        # Launch the process, and do not stop at the entry point.
+        process = target.LaunchSimple(
+            None, None, self.get_process_working_directory())
+        abi_after_launch = target.GetABIName()
+        self.assertEqual(abi_pre_launch, abi_after_launch, "ABI's match before and during run")
+
     def test_read_memory(self):
         d = {'EXE': 'b.out'}
         self.build(dictionary=d)
@@ -136,7 +159,7 @@ class TargetAPITestCase(TestBase):
         sb_addr = lldb.SBAddress(data_section, 0)
         error = lldb.SBError()
         content = target.ReadMemory(sb_addr, 1, error)
-        self.assertTrue(error.Success(), "Make sure memory read succeeded")
+        self.assertSuccess(error, "Make sure memory read succeeded")
         self.assertEqual(len(content), 1)
 
 
@@ -207,7 +230,7 @@ class TargetAPITestCase(TestBase):
         return data_section
 
     def find_global_variables(self, exe_name):
-        """Exercise SBTaget.FindGlobalVariables() API."""
+        """Exercise SBTarget.FindGlobalVariables() API."""
         exe = self.getBuildArtifact(exe_name)
 
         # Create a target by the debugger.
@@ -272,7 +295,7 @@ class TargetAPITestCase(TestBase):
             list[0].GetCompileUnit().GetFileSpec().GetFilename(), source_name)
 
     def find_functions(self, exe_name):
-        """Exercise SBTaget.FindFunctions() API."""
+        """Exercise SBTarget.FindFunctions() API."""
         exe = self.getBuildArtifact(exe_name)
 
         # Create a target by the debugger.
@@ -292,7 +315,7 @@ class TargetAPITestCase(TestBase):
             self.assertEqual(sc.GetSymbol().GetName(), 'c')
 
     def get_description(self):
-        """Exercise SBTaget.GetDescription() API."""
+        """Exercise SBTarget.GetDescription() API."""
         exe = self.getBuildArtifact("a.out")
 
         # Create a target by the debugger.
@@ -321,7 +344,7 @@ class TargetAPITestCase(TestBase):
     @skipIfRemote
     @no_debug_info_test
     def test_launch_new_process_and_redirect_stdout(self):
-        """Exercise SBTaget.Launch() API with redirected stdout."""
+        """Exercise SBTarget.Launch() API with redirected stdout."""
         self.build()
         exe = self.getBuildArtifact("a.out")
 
@@ -380,7 +403,7 @@ class TargetAPITestCase(TestBase):
                     substrs=["a(1)", "b(2)", "a(3)"])
 
     def resolve_symbol_context_with_address(self):
-        """Exercise SBTaget.ResolveSymbolContextForAddress() API."""
+        """Exercise SBTarget.ResolveSymbolContextForAddress() API."""
         exe = self.getBuildArtifact("a.out")
 
         # Create a target by the debugger.
@@ -460,6 +483,7 @@ class TargetAPITestCase(TestBase):
         self.assertTrue(desc1 and desc2 and desc1 == desc2,
                         "The two addresses should resolve to the same symbol")
 
+    @skipIfRemote
     def test_default_arch(self):
         """ Test the other two target create methods using LLDB_ARCH_DEFAULT. """
         self.build()

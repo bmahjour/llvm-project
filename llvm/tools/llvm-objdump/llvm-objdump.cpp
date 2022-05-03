@@ -33,6 +33,7 @@
 #include "llvm/ADT/Triple.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/DebugInfo/DWARF/DWARFContext.h"
+#include "llvm/DebugInfo/Symbolize/SymbolizableModule.h"
 #include "llvm/DebugInfo/Symbolize/Symbolize.h"
 #include "llvm/Demangle/Demangle.h"
 #include "llvm/MC/MCAsmInfo.h"
@@ -47,6 +48,7 @@
 #include "llvm/MC/MCRegisterInfo.h"
 #include "llvm/MC/MCSubtargetInfo.h"
 #include "llvm/MC/MCTargetOptions.h"
+#include "llvm/MC/TargetRegistry.h"
 #include "llvm/Object/Archive.h"
 #include "llvm/Object/COFF.h"
 #include "llvm/Object/COFFImportFile.h"
@@ -71,7 +73,6 @@
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/StringSaver.h"
-#include "llvm/Support/TargetRegistry.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/WithColor.h"
 #include "llvm/Support/raw_ostream.h"
@@ -440,8 +441,13 @@ static bool isArmElf(const ObjectFile *Obj) {
   return Elf && Elf->getEMachine() == ELF::EM_ARM;
 }
 
+static bool isCSKYElf(const ObjectFile *Obj) {
+  const auto *Elf = dyn_cast<ELFObjectFileBase>(Obj);
+  return Elf && Elf->getEMachine() == ELF::EM_CSKY;
+}
+
 static bool hasMappingSymbols(const ObjectFile *Obj) {
-  return isArmElf(Obj) || isAArch64Elf(Obj);
+  return isArmElf(Obj) || isAArch64Elf(Obj) || isCSKYElf(Obj) ;
 }
 
 static void printRelocation(formatted_raw_ostream &OS, StringRef FileName,
@@ -957,6 +963,9 @@ SymbolInfoTy objdump::createSymbolInfo(const ObjectFile *Obj,
         getXCOFFSymbolCsectSMC(XCOFFObj, Symbol);
     return SymbolInfoTy(Addr, Name, Smc, SymbolIndex,
                         isLabel(XCOFFObj, Symbol));
+  } else if (Obj->isXCOFF()) {
+    const SymbolRef::Type SymType = unwrapOrError(Symbol.getType(), FileName);
+    return SymbolInfoTy(Addr, Name, SymType, true);
   } else
     return SymbolInfoTy(Addr, Name,
                         Obj->isELF() ? getElfSymbolType(Obj, Symbol)
@@ -978,8 +987,8 @@ collectLocalBranchTargets(ArrayRef<uint8_t> Bytes, const MCInstrAnalysis *MIA,
                           const MCSubtargetInfo *STI, uint64_t SectionAddr,
                           uint64_t Start, uint64_t End,
                           std::unordered_map<uint64_t, std::string> &Labels) {
-  // So far only supports X86.
-  if (!STI->getTargetTriple().isX86())
+  // So far only supports PowerPC and X86.
+  if (!STI->getTargetTriple().isPPC() && !STI->getTargetTriple().isX86())
     return;
 
   Labels.clear();
@@ -999,8 +1008,11 @@ collectLocalBranchTargets(ArrayRef<uint8_t> Bytes, const MCInstrAnalysis *MIA,
     if (Disassembled && MIA) {
       uint64_t Target;
       bool TargetKnown = MIA->evaluateBranch(Inst, Index, Size, Target);
+      // On PowerPC, if the address of a branch is the same as the target, it
+      // means that it's a function call. Do not mark the label for this case.
       if (TargetKnown && (Target >= Start && Target < End) &&
-          !Labels.count(Target))
+          !Labels.count(Target) &&
+          !(STI->getTargetTriple().isPPC() && Target == Index))
         Labels[Target] = ("L" + Twine(LabelCount++)).str();
     }
 
@@ -2092,7 +2104,7 @@ void objdump::printSymbol(const ObjectFile *O, const SymbolRef &Symbol,
   }
 
   if (Common)
-    outs() << '\t' << format(Fmt, Symbol.getAlignment());
+    outs() << '\t' << format(Fmt, static_cast<uint64_t>(Symbol.getAlignment()));
   else if (O->isXCOFF())
     outs() << '\t'
            << format(Fmt, dyn_cast<const XCOFFObjectFile>(O)->getSymbolSize(
@@ -2245,7 +2257,7 @@ static void printPrivateFileHeaders(const ObjectFile *O, bool OnlyFirst) {
     return;
   }
   if (O->isCOFF())
-    return printCOFFFileHeader(O);
+    return printCOFFFileHeader(cast<object::COFFObjectFile>(*O));
   if (O->isWasm())
     return printWasmFileHeader(O);
   if (O->isMachO()) {
@@ -2500,6 +2512,11 @@ static void parseIntArg(const llvm::opt::InputArgList &InputArgs, int ID,
   }
 }
 
+static void invalidArgValue(const opt::Arg *A) {
+  reportCmdLineError("'" + StringRef(A->getValue()) +
+                     "' is not a valid value for '" + A->getSpelling() + "'");
+}
+
 static std::vector<std::string>
 commaSeparatedValues(const llvm::opt::InputArgList &InputArgs, int ID) {
   std::vector<std::string> Values;
@@ -2573,8 +2590,11 @@ static void parseObjdumpOptions(const llvm::opt::InputArgList &InputArgs) {
       commaSeparatedValues(InputArgs, OBJDUMP_disassemble_symbols_EQ);
   DisassembleZeroes = InputArgs.hasArg(OBJDUMP_disassemble_zeroes);
   if (const opt::Arg *A = InputArgs.getLastArg(OBJDUMP_dwarf_EQ)) {
-    DwarfDumpType =
-        StringSwitch<DIDumpType>(A->getValue()).Case("frames", DIDT_DebugFrame);
+    DwarfDumpType = StringSwitch<DIDumpType>(A->getValue())
+                        .Case("frames", DIDT_DebugFrame)
+                        .Default(DIDT_Null);
+    if (DwarfDumpType == DIDT_Null)
+      invalidArgValue(A);
   }
   DynamicRelocations = InputArgs.hasArg(OBJDUMP_dynamic_reloc);
   FaultMapSection = InputArgs.hasArg(OBJDUMP_fault_map_section);
@@ -2611,7 +2631,10 @@ static void parseObjdumpOptions(const llvm::opt::InputArgList &InputArgs) {
   if (const opt::Arg *A = InputArgs.getLastArg(OBJDUMP_debug_vars_EQ)) {
     DbgVariables = StringSwitch<DebugVarsFormat>(A->getValue())
                        .Case("ascii", DVASCII)
-                       .Case("unicode", DVUnicode);
+                       .Case("unicode", DVUnicode)
+                       .Default(DVInvalid);
+    if (DbgVariables == DVInvalid)
+      invalidArgValue(A);
   }
   parseIntArg(InputArgs, OBJDUMP_debug_vars_indent_EQ, DbgIndent);
 
@@ -2701,7 +2724,7 @@ int main(int argc, char **argv) {
     return 0;
   }
   if (InputArgs.hasArg(HelpHiddenFlag)) {
-    T->printHelp(ToolName, /*show_hidden=*/true);
+    T->printHelp(ToolName, /*ShowHidden=*/true);
     return 0;
   }
 
@@ -2743,11 +2766,11 @@ int main(int argc, char **argv) {
       !DynamicRelocations && !FileHeaders && !PrivateHeaders && !RawClangAST &&
       !Relocations && !SectionHeaders && !SectionContents && !SymbolTable &&
       !DynamicSymbolTable && !UnwindInfo && !FaultMapSection &&
-      !(MachOOpt &&
-        (Bind || DataInCode || DylibId || DylibsUsed || ExportsTrie ||
-         FirstPrivateHeader || FunctionStarts || IndirectSymbols || InfoPlist ||
-         LazyBind || LinkOptHints || ObjcMetaData || Rebase || Rpaths ||
-         UniversalHeaders || WeakBind || !FilterSections.empty()))) {
+      !(MachOOpt && (Bind || DataInCode || DyldInfo || DylibId || DylibsUsed ||
+                     ExportsTrie || FirstPrivateHeader || FunctionStarts ||
+                     IndirectSymbols || InfoPlist || LazyBind || LinkOptHints ||
+                     ObjcMetaData || Rebase || Rpaths || UniversalHeaders ||
+                     WeakBind || !FilterSections.empty()))) {
     T->printHelp(ToolName);
     return 2;
   }

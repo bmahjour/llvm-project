@@ -7,7 +7,6 @@
 //===----------------------------------------------------------------------===//
 
 // UNSUPPORTED: c++03, c++11, c++14, c++17
-// UNSUPPORTED: libcpp-no-concepts
 // UNSUPPORTED: libcpp-has-no-incomplete-ranges
 
 // common_view() requires default_initializable<V> = default;
@@ -21,7 +20,7 @@
 #include "types.h"
 
 int main(int, char**) {
-  static_assert(!std::default_initializable<std::ranges::common_view<ContiguousView>>);
+  static_assert(!std::default_initializable<std::ranges::common_view<MoveOnlyView>>);
   static_assert( std::default_initializable<std::ranges::common_view<DefaultConstructibleView>>);
 
   std::ranges::common_view<DefaultConstructibleView> common;

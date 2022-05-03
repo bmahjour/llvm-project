@@ -23,10 +23,8 @@
 #include "llvm/ADT/Statistic.h"
 #include "llvm/Analysis/BlockFrequencyInfo.h"
 #include "llvm/Analysis/BranchProbabilityInfo.h"
-#include "llvm/Analysis/ConstantFolding.h"
 #include "llvm/Analysis/InstructionSimplify.h"
 #include "llvm/Analysis/LoopInfo.h"
-#include "llvm/Analysis/MemoryBuiltins.h"
 #include "llvm/Analysis/ProfileSummaryInfo.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Analysis/TargetTransformInfo.h"
@@ -524,7 +522,8 @@ bool CodeGenPrepare::runOnFunction(Function &F) {
 
   // Split some critical edges where one of the sources is an indirect branch,
   // to help generate sane code for PHIs involving such edges.
-  EverMadeChange |= SplitIndirectBrCriticalEdges(F);
+  EverMadeChange |=
+      SplitIndirectBrCriticalEdges(F, /*IgnoreBlocksWithoutPHI=*/true);
 
   bool MadeChange = true;
   while (MadeChange) {
@@ -659,12 +658,8 @@ void CodeGenPrepare::removeAllAssertingVHReferences(Value *V) {
     return;
 
   auto &GEPVector = VecI->second;
-  const auto &I =
-      llvm::find_if(GEPVector, [=](auto &Elt) { return Elt.first == GEP; });
-  if (I == GEPVector.end())
-    return;
+  llvm::erase_if(GEPVector, [=](auto &Elt) { return Elt.first == GEP; });
 
-  GEPVector.erase(I);
   if (GEPVector.empty())
     LargeOffsetGEPMap.erase(VecI);
 }
@@ -2036,7 +2031,7 @@ static bool despeculateCountZeros(IntrinsicInst *CountZeros,
 
   // Only handle legal scalar cases. Anything else requires too much work.
   Type *Ty = CountZeros->getType();
-  unsigned SizeInBits = Ty->getPrimitiveSizeInBits();
+  unsigned SizeInBits = Ty->getScalarSizeInBits();
   if (Ty->isVectorTy() || SizeInBits > DL->getLargestLegalIntTypeSizeInBits())
     return false;
 
@@ -3450,7 +3445,7 @@ private:
   bool AllAddrModesTrivial = true;
 
   /// Common Type for all different fields in addressing modes.
-  Type *CommonType;
+  Type *CommonType = nullptr;
 
   /// SimplifyQuery for simplifyInstruction utility.
   const SimplifyQuery &SQ;
@@ -3460,7 +3455,7 @@ private:
 
 public:
   AddressingModeCombiner(const SimplifyQuery &_SQ, Value *OriginalValue)
-      : CommonType(nullptr), SQ(_SQ), Original(OriginalValue) {}
+      : SQ(_SQ), Original(OriginalValue) {}
 
   /// Get the combined AddrMode
   const ExtAddrMode &getAddrMode() const {
@@ -4172,11 +4167,11 @@ bool TypePromotionHelper::canGetThrough(const Instruction *Inst,
 
   // We can get through binary operator, if it is legal. In other words, the
   // binary operator must have a nuw or nsw flag.
-  const BinaryOperator *BinOp = dyn_cast<BinaryOperator>(Inst);
-  if (isa_and_nonnull<OverflowingBinaryOperator>(BinOp) &&
-      ((!IsSExt && BinOp->hasNoUnsignedWrap()) ||
-       (IsSExt && BinOp->hasNoSignedWrap())))
-    return true;
+  if (const auto *BinOp = dyn_cast<BinaryOperator>(Inst))
+    if (isa<OverflowingBinaryOperator>(BinOp) &&
+        ((!IsSExt && BinOp->hasNoUnsignedWrap()) ||
+         (IsSExt && BinOp->hasNoSignedWrap())))
+      return true;
 
   // ext(and(opnd, cst)) --> and(ext(opnd), ext(cst))
   if ((Inst->getOpcode() == Instruction::And ||
@@ -4185,10 +4180,10 @@ bool TypePromotionHelper::canGetThrough(const Instruction *Inst,
 
   // ext(xor(opnd, cst)) --> xor(ext(opnd), ext(cst))
   if (Inst->getOpcode() == Instruction::Xor) {
-    const ConstantInt *Cst = dyn_cast<ConstantInt>(Inst->getOperand(1));
     // Make sure it is not a NOT.
-    if (Cst && !Cst->getValue().isAllOnesValue())
-      return true;
+    if (const auto *Cst = dyn_cast<ConstantInt>(Inst->getOperand(1)))
+      if (!Cst->getValue().isAllOnes())
+        return true;
   }
 
   // zext(shrl(opnd, cst)) --> shrl(zext(opnd), zext(cst))
@@ -4554,9 +4549,9 @@ bool AddressingModeMatcher::matchOperationAddr(User *AddrInst, unsigned Opcode,
     ConstantInt *RHS = dyn_cast<ConstantInt>(AddrInst->getOperand(1));
     if (!RHS || RHS->getBitWidth() > 64)
       return false;
-    int64_t Scale = RHS->getSExtValue();
-    if (Opcode == Instruction::Shl)
-      Scale = 1LL << Scale;
+    int64_t Scale = Opcode == Instruction::Shl
+                        ? 1LL << RHS->getLimitedValue(RHS->getBitWidth() - 1)
+                        : RHS->getSExtValue();
 
     return matchScaledValue(AddrInst->getOperand(0), Scale, Depth);
   }
@@ -4835,14 +4830,12 @@ static bool IsOperandAMemoryOperand(CallInst *CI, InlineAsm *IA, Value *OpVal,
   TargetLowering::AsmOperandInfoVector TargetConstraints =
       TLI.ParseConstraints(F->getParent()->getDataLayout(), &TRI, *CI);
 
-  for (unsigned i = 0, e = TargetConstraints.size(); i != e; ++i) {
-    TargetLowering::AsmOperandInfo &OpInfo = TargetConstraints[i];
-
+  for (TargetLowering::AsmOperandInfo &OpInfo : TargetConstraints) {
     // Compute the constraint code and ConstraintType to use.
     TLI.ComputeConstraintToUse(OpInfo, SDValue());
 
     // If this asm operand is our Value*, and if it isn't an indirect memory
-    // operand, we can't fold it!
+    // operand, we can't fold it!  TODO: Also handle C_Address?
     if (OpInfo.CallOperandVal == OpVal &&
         (OpInfo.ConstraintType != TargetLowering::C_Memory ||
          !OpInfo.isIndirect))
@@ -5621,12 +5614,11 @@ bool CodeGenPrepare::optimizeInlineAsmInst(CallInst *CS) {
   TargetLowering::AsmOperandInfoVector TargetConstraints =
       TLI->ParseConstraints(*DL, TRI, *CS);
   unsigned ArgNo = 0;
-  for (unsigned i = 0, e = TargetConstraints.size(); i != e; ++i) {
-    TargetLowering::AsmOperandInfo &OpInfo = TargetConstraints[i];
-
+  for (TargetLowering::AsmOperandInfo &OpInfo : TargetConstraints) {
     // Compute the constraint code and ConstraintType to use.
     TLI->ComputeConstraintToUse(OpInfo, SDValue());
 
+    // TODO: Also handle C_Address?
     if (OpInfo.ConstraintType == TargetLowering::C_Memory &&
         OpInfo.isIndirect) {
       Value *OpVal = CS->getArgOperand(ArgNo++);
@@ -6860,8 +6852,7 @@ bool CodeGenPrepare::optimizeSelectInst(SelectInst *SI) {
   // Use reverse iterator because later select may use the value of the
   // earlier select, and we need to propagate value through earlier select
   // to get the PHI operand.
-  for (auto It = ASI.rbegin(); It != ASI.rend(); ++It) {
-    SelectInst *SI = *It;
+  for (SelectInst *SI : llvm::reverse(ASI)) {
     // The select itself is replaced with a PHI Node.
     PHINode *PN = PHINode::Create(SI->getType(), 2, "", &EndBlock->front());
     PN->takeName(SI);

@@ -11,6 +11,12 @@ if(APPLE)
     )
 endif()
 
+if(${CMAKE_SYSTEM_NAME} MATCHES "AIX")
+  list(APPEND LIBUNWIND_CXX_SOURCES
+    Unwind_AIXExtras.cpp
+    )
+endif()
+
 set(LIBUNWIND_C_SOURCES
     UnwindLevel1.c
     UnwindLevel1-gcc-ext.c
@@ -26,7 +32,11 @@ set(LIBUNWIND_ASM_SOURCES
     )
 
 # See add_asm_sources() in compiler-rt for explanation of this workaround.
-if((APPLE AND CMAKE_VERSION VERSION_LESS 3.19) OR (MINGW AND CMAKE_VERSION VERSION_LESS 3.17))
+# CMake doesn't work correctly with assembly on AIX. Workaround by compiling
+# as C files as well.
+if((APPLE AND CMAKE_VERSION VERSION_LESS 3.19) OR
+   (MINGW AND CMAKE_VERSION VERSION_LESS 3.17) OR
+   (${CMAKE_SYSTEM_NAME} MATCHES "AIX"))
   set_source_files_properties(${LIBUNWIND_ASM_SOURCES} PROPERTIES LANGUAGE C)
 endif()
 
@@ -83,7 +93,8 @@ if (LIBUNWIND_ENABLE_THREADS)
 endif()
 
 # Setup flags.
-if (LIBUNWIND_SUPPORTS_NOSTDLIBXX_FLAG)
+add_link_flags_if(CXX_SUPPORTS_UNWINDLIB_EQ_NONE_FLAG --unwindlib=none)
+if (CXX_SUPPORTS_NOSTDLIBXX_FLAG)
   add_link_flags_if_supported(-nostdlib++)
 else()
   add_link_flags_if_supported(-nodefaultlibs)
@@ -93,8 +104,8 @@ endif()
 add_library_flags_if(MINGW "${MINGW_LIBRARIES}")
 
 if (LIBUNWIND_ENABLE_SHARED AND
-    NOT (LIBUNWIND_SUPPORTS_FNO_EXCEPTIONS_FLAG AND
-         LIBUNWIND_SUPPORTS_FUNWIND_TABLES_FLAG))
+    NOT (CXX_SUPPORTS_FNO_EXCEPTIONS_FLAG AND
+         CXX_SUPPORTS_FUNWIND_TABLES_FLAG))
   message(FATAL_ERROR
           "Compiler doesn't support generation of unwind tables if exception "
           "support is disabled.  Building libunwind DSO with runtime dependency "
@@ -132,7 +143,8 @@ if (LIBUNWIND_ENABLE_SHARED)
   else()
     target_compile_options(unwind_shared PRIVATE -fno-rtti)
   endif()
-  target_link_libraries(unwind_shared PRIVATE ${LIBUNWIND_LIBRARIES})
+  target_link_libraries(unwind_shared PRIVATE ${LIBUNWIND_LIBRARIES}
+                                      PRIVATE unwind-headers)
   set_target_properties(unwind_shared
     PROPERTIES
       CXX_EXTENSIONS OFF
@@ -144,7 +156,6 @@ if (LIBUNWIND_ENABLE_SHARED)
       OUTPUT_NAME "unwind"
       VERSION "1.0"
       SOVERSION "1"
-      POSITION_INDEPENDENT_CODE ON
   )
   list(APPEND LIBUNWIND_BUILD_TARGETS "unwind_shared")
   if (LIBUNWIND_INSTALL_SHARED_LIBRARY)
@@ -160,7 +171,8 @@ if (LIBUNWIND_ENABLE_STATIC)
   else()
     target_compile_options(unwind_static PRIVATE -fno-rtti)
   endif()
-  target_link_libraries(unwind_static PRIVATE ${LIBUNWIND_LIBRARIES})
+  target_link_libraries(unwind_static PRIVATE ${LIBUNWIND_LIBRARIES}
+                                      PRIVATE unwind-headers)
   set_target_properties(unwind_static
     PROPERTIES
       CXX_EXTENSIONS OFF
@@ -170,7 +182,6 @@ if (LIBUNWIND_ENABLE_STATIC)
       LINK_FLAGS "${LIBUNWIND_LINK_FLAGS}"
       LINKER_LANGUAGE C
       OUTPUT_NAME "unwind"
-      POSITION_INDEPENDENT_CODE ON
   )
 
   if(LIBUNWIND_HIDE_SYMBOLS)
@@ -208,4 +219,8 @@ if (NOT CMAKE_CONFIGURATION_TYPES AND LIBUNWIND_INSTALL_LIBRARY)
             -DCMAKE_INSTALL_COMPONENT=unwind
             -DCMAKE_INSTALL_DO_STRIP=1
             -P "${LIBUNWIND_BINARY_DIR}/cmake_install.cmake")
+  if(LIBUNWIND_INSTALL_HEADERS)
+    add_dependencies(install-unwind install-unwind-headers)
+    add_dependencies(install-unwind-stripped install-unwind-headers-stripped)
+  endif()
 endif()

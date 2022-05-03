@@ -10,14 +10,13 @@
 #define LLVM_DEBUGINFO_GSYM_LOOKUPRESULT_H
 
 #include "llvm/ADT/StringRef.h"
-#include "llvm/DebugInfo/GSYM/Range.h"
+#include "llvm/DebugInfo/GSYM/ExtractRanges.h"
 #include <inttypes.h>
 #include <vector>
 
 namespace llvm {
 class raw_ostream;
 namespace gsym {
-struct FileEntry;
 
 struct SourceLocation {
   StringRef Name;      ///< Function or symbol name.

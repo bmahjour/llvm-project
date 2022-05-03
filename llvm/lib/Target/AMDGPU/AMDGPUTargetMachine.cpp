@@ -27,6 +27,7 @@
 #include "SIMachineScheduler.h"
 #include "TargetInfo/AMDGPUTargetInfo.h"
 #include "llvm/Analysis/CGSCCPassManager.h"
+#include "llvm/CodeGen/GlobalISel/CSEInfo.h"
 #include "llvm/CodeGen/GlobalISel/IRTranslator.h"
 #include "llvm/CodeGen/GlobalISel/InstructionSelect.h"
 #include "llvm/CodeGen/GlobalISel/Legalizer.h"
@@ -36,11 +37,13 @@
 #include "llvm/CodeGen/Passes.h"
 #include "llvm/CodeGen/RegAllocRegistry.h"
 #include "llvm/CodeGen/TargetPassConfig.h"
+#include "llvm/IR/IntrinsicsAMDGPU.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/PassManager.h"
+#include "llvm/IR/PatternMatch.h"
 #include "llvm/InitializePasses.h"
+#include "llvm/MC/TargetRegistry.h"
 #include "llvm/Passes/PassBuilder.h"
-#include "llvm/Support/TargetRegistry.h"
 #include "llvm/Transforms/IPO.h"
 #include "llvm/Transforms/IPO/AlwaysInliner.h"
 #include "llvm/Transforms/IPO/GlobalDCE.h"
@@ -54,6 +57,7 @@
 #include "llvm/Transforms/Vectorize.h"
 
 using namespace llvm;
+using namespace llvm::PatternMatch;
 
 namespace {
 class SGPRRegisterRegAlloc : public RegisterRegAllocBase<SGPRRegisterRegAlloc> {
@@ -229,13 +233,6 @@ static cl::opt<bool, true> LateCFGStructurize(
   cl::location(AMDGPUTargetMachine::EnableLateStructurizeCFG),
   cl::Hidden);
 
-static cl::opt<bool, true> EnableAMDGPUFixedFunctionABIOpt(
-  "amdgpu-fixed-function-abi",
-  cl::desc("Enable all implicit function arguments"),
-  cl::location(AMDGPUTargetMachine::EnableFixedFunctionABI),
-  cl::init(false),
-  cl::Hidden);
-
 // Enable lib calls simplifications
 static cl::opt<bool> EnableLibCallSimplify(
   "amdgpu-simplify-libcall",
@@ -280,6 +277,10 @@ EnableDCEInRA("amdgpu-dce-in-ra",
     cl::init(true), cl::Hidden,
     cl::desc("Enable machine DCE inside regalloc"));
 
+static cl::opt<bool> EnableSetWavePriority("amdgpu-set-wave-priority",
+                                           cl::desc("Adjust wave priority"),
+                                           cl::init(false), cl::Hidden);
+
 static cl::opt<bool> EnableScalarIRPasses(
   "amdgpu-scalar-ir-passes",
   cl::desc("Enable scalar IR passes"),
@@ -306,6 +307,11 @@ static cl::opt<bool> EnablePreRAOptimizations(
     cl::desc("Enable Pre-RA optimizations pass"), cl::init(true),
     cl::Hidden);
 
+static cl::opt<bool> EnablePromoteKernelArguments(
+    "amdgpu-enable-promote-kernel-arguments",
+    cl::desc("Enable promotion of flat kernel pointer arguments to global"),
+    cl::Hidden, cl::init(true));
+
 extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeAMDGPUTarget() {
   // Register the target
   RegisterTargetMachine<R600TargetMachine> X(getTheAMDGPUTarget());
@@ -330,7 +336,6 @@ extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeAMDGPUTarget() {
   initializeSIOptimizeExecMaskingPreRAPass(*PR);
   initializeSIOptimizeVGPRLiveRangePass(*PR);
   initializeSILoadStoreOptimizerPass(*PR);
-  initializeAMDGPUFixFunctionBitcastsPass(*PR);
   initializeAMDGPUCtorDtorLoweringPass(*PR);
   initializeAMDGPUAlwaysInlinePass(*PR);
   initializeAMDGPUAttributorPass(*PR);
@@ -339,6 +344,7 @@ extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeAMDGPUTarget() {
   initializeAMDGPUArgumentUsageInfoPass(*PR);
   initializeAMDGPUAtomicOptimizerPass(*PR);
   initializeAMDGPULowerKernelArgumentsPass(*PR);
+  initializeAMDGPUPromoteKernelArgumentsPass(*PR);
   initializeAMDGPULowerKernelAttributesPass(*PR);
   initializeAMDGPULowerIntrinsicsPass(*PR);
   initializeAMDGPUOpenCLEnqueuedBlockLoweringPass(*PR);
@@ -497,7 +503,6 @@ AMDGPUTargetMachine::AMDGPUTargetMachine(const Target &T, const Triple &TT,
 
 bool AMDGPUTargetMachine::EnableLateStructurizeCFG = false;
 bool AMDGPUTargetMachine::EnableFunctionCalls = false;
-bool AMDGPUTargetMachine::EnableFixedFunctionABI = false;
 bool AMDGPUTargetMachine::EnableLowerModuleLDS = true;
 
 AMDGPUTargetMachine::~AMDGPUTargetMachine() = default;
@@ -533,6 +538,8 @@ void AMDGPUTargetMachine::adjustPassManager(PassManagerBuilder &Builder) {
   bool EarlyInline = EarlyInlineAll && EnableOpt && !EnableFunctionCalls;
   bool AMDGPUAA = EnableAMDGPUAliasAnalysis && EnableOpt;
   bool LibCallSimplify = EnableLibCallSimplify && EnableOpt;
+  bool PromoteKernelArguments =
+      EnablePromoteKernelArguments && getOptLevel() > CodeGenOpt::Less;
 
   if (EnableFunctionCalls) {
     delete Builder.Inliner;
@@ -574,7 +581,14 @@ void AMDGPUTargetMachine::adjustPassManager(PassManagerBuilder &Builder) {
 
   Builder.addExtension(
     PassManagerBuilder::EP_CGSCCOptimizerLate,
-    [EnableOpt](const PassManagerBuilder &, legacy::PassManagerBase &PM) {
+    [EnableOpt, PromoteKernelArguments](const PassManagerBuilder &,
+                                        legacy::PassManagerBase &PM) {
+      // Add promote kernel arguments pass to the opt pipeline right before
+      // infer address spaces which is needed to do actual address space
+      // rewriting.
+      if (PromoteKernelArguments)
+        PM.add(createAMDGPUPromoteKernelArgumentsPass());
+
       // Add infer address spaces pass to the opt pipeline after inlining
       // but before SROA to increase SROA opportunities.
       PM.add(createInferAddressSpacesPass());
@@ -651,6 +665,10 @@ void AMDGPUTargetMachine::registerPassBuilderCallbacks(PassBuilder &PB) {
           PM.addPass(AMDGPUPropagateAttributesEarlyPass(*this));
           return true;
         }
+        if (PassName == "amdgpu-promote-kernel-arguments") {
+          PM.addPass(AMDGPUPromoteKernelArgumentsPass());
+          return true;
+        }
         return false;
       });
 
@@ -701,6 +719,13 @@ void AMDGPUTargetMachine::registerPassBuilderCallbacks(PassBuilder &PB) {
           return;
 
         FunctionPassManager FPM;
+
+        // Add promote kernel arguments pass to the opt pipeline right before
+        // infer address spaces which is needed to do actual address space
+        // rewriting.
+        if (Level.getSpeedupLevel() > OptimizationLevel::O1.getSpeedupLevel() &&
+            EnablePromoteKernelArguments)
+          FPM.addPass(AMDGPUPromoteKernelArgumentsPass());
 
         // Add infer address spaces pass to the opt pipeline after inlining
         // but before SROA to increase SROA opportunities.
@@ -754,6 +779,33 @@ unsigned AMDGPUTargetMachine::getAssumedAddrSpace(const Value *V) const {
   return AMDGPUAS::GLOBAL_ADDRESS;
 }
 
+std::pair<const Value *, unsigned>
+AMDGPUTargetMachine::getPredicatedAddrSpace(const Value *V) const {
+  if (auto *II = dyn_cast<IntrinsicInst>(V)) {
+    switch (II->getIntrinsicID()) {
+    case Intrinsic::amdgcn_is_shared:
+      return std::make_pair(II->getArgOperand(0), AMDGPUAS::LOCAL_ADDRESS);
+    case Intrinsic::amdgcn_is_private:
+      return std::make_pair(II->getArgOperand(0), AMDGPUAS::PRIVATE_ADDRESS);
+    default:
+      break;
+    }
+    return std::make_pair(nullptr, -1);
+  }
+  // Check the global pointer predication based on
+  // (!is_share(p) && !is_private(p)). Note that logic 'and' is commutative and
+  // the order of 'is_shared' and 'is_private' is not significant.
+  Value *Ptr;
+  if (match(
+          const_cast<Value *>(V),
+          m_c_And(m_Not(m_Intrinsic<Intrinsic::amdgcn_is_shared>(m_Value(Ptr))),
+                  m_Not(m_Intrinsic<Intrinsic::amdgcn_is_private>(
+                      m_Deferred(Ptr))))))
+    return std::make_pair(Ptr, AMDGPUAS::GLOBAL_ADDRESS);
+
+  return std::make_pair(nullptr, -1);
+}
+
 //===----------------------------------------------------------------------===//
 // GCN Target Machine (SI+)
 //===----------------------------------------------------------------------===//
@@ -789,7 +841,7 @@ GCNTargetMachine::getSubtargetImpl(const Function &F) const {
 }
 
 TargetTransformInfo
-GCNTargetMachine::getTargetTransformInfo(const Function &F) {
+GCNTargetMachine::getTargetTransformInfo(const Function &F) const {
   return TargetTransformInfo(GCNTTIImpl(this, F));
 }
 
@@ -825,6 +877,7 @@ public:
   createPostMachineScheduler(MachineSchedContext *C) const override {
     ScheduleDAGMI *DAG = createGenericSchedPostRA(C);
     const GCNSubtarget &ST = C->MF->getSubtarget<GCNSubtarget>();
+    DAG->addMutation(createLoadClusterDAGMutation(DAG->TII, DAG->TRI));
     DAG->addMutation(ST.createFillMFMAShadowMutation(DAG->TII));
     return DAG;
   }
@@ -904,10 +957,6 @@ void AMDGPUPassConfig::addIRPasses() {
 
   addPass(createAMDGPUPrintfRuntimeBinding());
   addPass(createAMDGPUCtorDtorLoweringPass());
-
-  // This must occur before inlining, as the inliner will not look through
-  // bitcast calls.
-  addPass(createAMDGPUFixFunctionBitcastsPass());
 
   // A call to propagate attributes pass in the backend in case opt was not run.
   addPass(createAMDGPUPropagateAttributesEarlyPass(&TM));
@@ -1171,7 +1220,7 @@ void GCNPassConfig::addFastRegAlloc() {
   // This must be run immediately after phi elimination and before
   // TwoAddressInstructions, otherwise the processing of the tied operand of
   // SI_ELSE will introduce a copy of the tied operand source after the else.
-  insertPass(&PHIEliminationID, &SILowerControlFlowID, false);
+  insertPass(&PHIEliminationID, &SILowerControlFlowID);
 
   insertPass(&TwoAddressInstructionPassID, &SIWholeQuadModeID);
   insertPass(&TwoAddressInstructionPassID, &SIPreAllocateWWMRegsID);
@@ -1201,11 +1250,11 @@ void GCNPassConfig::addOptimizedRegAlloc() {
   // the register in LiveVariables, this would trigger a failure in verifier,
   // we should fix it and enable the verifier.
   if (OptVGPRLiveRange)
-    insertPass(&LiveVariablesID, &SIOptimizeVGPRLiveRangeID, false);
+    insertPass(&LiveVariablesID, &SIOptimizeVGPRLiveRangeID);
   // This must be run immediately after phi elimination and before
   // TwoAddressInstructions, otherwise the processing of the tied operand of
   // SI_ELSE will introduce a copy of the tied operand source after the else.
-  insertPass(&PHIEliminationID, &SILowerControlFlowID, false);
+  insertPass(&PHIEliminationID, &SILowerControlFlowID);
 
   if (EnableDCEInRA)
     insertPass(&DetectDeadLanesID, &DeadMachineInstructionElimID);
@@ -1300,6 +1349,8 @@ void GCNPassConfig::addPostRegAlloc() {
 }
 
 void GCNPassConfig::addPreSched2() {
+  if (TM->getOptLevel() > CodeGenOpt::None)
+    addPass(createSIShrinkInstructionsPass());
   addPass(&SIPostRABundlerID);
 }
 
@@ -1307,15 +1358,14 @@ void GCNPassConfig::addPreEmitPass() {
   addPass(createSIMemoryLegalizerPass());
   addPass(createSIInsertWaitcntsPass());
 
-  if (TM->getOptLevel() > CodeGenOpt::None)
-    addPass(createSIShrinkInstructionsPass());
-
   addPass(createSIModeRegisterPass());
 
   if (getOptLevel() > CodeGenOpt::None)
     addPass(&SIInsertHardClausesID);
 
   addPass(&SILateBranchLoweringPassID);
+  if (isPassEnabled(EnableSetWavePriority, CodeGenOpt::Less))
+    addPass(createAMDGPUSetWavePriorityPass());
   if (getOptLevel() > CodeGenOpt::None)
     addPass(&SIPreEmitPeepholeID);
   // The hazard recognizer that runs as part of the post-ra scheduler does not
@@ -1349,7 +1399,7 @@ bool GCNTargetMachine::parseMachineFunctionInfo(
     const yaml::MachineFunctionInfo &MFI_, PerFunctionMIParsingState &PFS,
     SMDiagnostic &Error, SMRange &SourceRange) const {
   const yaml::SIMachineFunctionInfo &YamlMFI =
-      reinterpret_cast<const yaml::SIMachineFunctionInfo &>(MFI_);
+      static_cast<const yaml::SIMachineFunctionInfo &>(MFI_);
   MachineFunction &MF = PFS.MF;
   SIMachineFunctionInfo *MFI = MF.getInfo<SIMachineFunctionInfo>();
 
@@ -1372,6 +1422,14 @@ bool GCNTargetMachine::parseMachineFunctionInfo(
 
     return false;
   };
+
+  auto parseOptionalRegister = [&](const yaml::StringValue &RegName,
+                                   Register &RegVal) {
+    return !RegName.Value.empty() && parseRegister(RegName, RegVal);
+  };
+
+  if (parseOptionalRegister(YamlMFI.VGPRForAGPRCopy, MFI->VGPRForAGPRCopy))
+    return true;
 
   auto diagnoseRegisterClass = [&](const yaml::StringValue &RegName) {
     // Create a diagnostic for a the register string literal.
@@ -1403,6 +1461,14 @@ bool GCNTargetMachine::parseMachineFunctionInfo(
   if (MFI->StackPtrOffsetReg != AMDGPU::SP_REG &&
       !AMDGPU::SGPR_32RegClass.contains(MFI->StackPtrOffsetReg)) {
     return diagnoseRegisterClass(YamlMFI.StackPtrOffsetReg);
+  }
+
+  for (const auto &YamlReg : YamlMFI.WWMReservedRegs) {
+    Register ParsedReg;
+    if (parseRegister(YamlReg, ParsedReg))
+      return true;
+
+    MFI->reserveWWMRegister(ParsedReg);
   }
 
   auto parseAndCheckArgument = [&](const Optional<yaml::SIArgument> &A,

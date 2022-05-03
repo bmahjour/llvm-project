@@ -224,7 +224,7 @@ void AMDGPUAsmPrinter::emitInstruction(const MachineInstr *MI) {
     EmitToStreamer(*OutStreamer, TmpInst);
 
 #ifdef EXPENSIVE_CHECKS
-    // Sanity-check getInstSizeInBytes on explicitly specified CPUs (it cannot
+    // Check getInstSizeInBytes on explicitly specified CPUs (it cannot
     // work correctly for the generic CPU).
     //
     // The isPseudo check really shouldn't be here, but unfortunately there are
@@ -239,7 +239,7 @@ void AMDGPUAsmPrinter::emitInstruction(const MachineInstr *MI) {
       raw_svector_ostream CodeStream(CodeBytes);
 
       std::unique_ptr<MCCodeEmitter> InstEmitter(createSIMCCodeEmitter(
-          *STI.getInstrInfo(), *OutContext.getRegisterInfo(), OutContext));
+          *STI.getInstrInfo(), OutContext));
       InstEmitter->encodeInstruction(TmpInst, CodeStream, Fixups, STI);
 
       assert(CodeBytes.size() == STI.getInstrInfo()->getInstSizeInBytes(*MI));

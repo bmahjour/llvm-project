@@ -2552,7 +2552,7 @@ void test2(Bar* b1, Bar* b2) {
 }
 
 
-// Sanity check -- lock the mutex directly, but use attributes that call getMu()
+// Lock the mutex directly, but use attributes that call getMu()
 // Also lock the mutex using getFooMu, which calls a lock_returned function.
 void test3(Bar* b1, Bar* b2) {
   b1->mu_.Lock();
@@ -3862,8 +3862,8 @@ class Foo {
     }
     a = 0; // \
       // expected-warning {{writing variable 'a' requires holding mutex 'mu_' exclusively}}
-    endNoWarnOnWrites();  // \
-      // expected-warning {{releasing mutex '*' that was not held}}
+    endNoWarnOnWrites(); // \
+      // expected-warning {{releasing wildcard '*' that was not held}}
   }
 
 
@@ -4830,7 +4830,7 @@ class Cell {
 
 
 // This mainly duplicates earlier tests, but just to make sure...
-class PtGuardedBySanityTest {
+class PtGuardedByCorrectnessTest {
   Mutex  mu1;
   Mutex  mu2;
   int*   a GUARDED_BY(mu1) PT_GUARDED_BY(mu2);

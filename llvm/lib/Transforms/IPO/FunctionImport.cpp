@@ -18,7 +18,6 @@
 #include "llvm/ADT/Statistic.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
-#include "llvm/ADT/StringSet.h"
 #include "llvm/Bitcode/BitcodeReader.h"
 #include "llvm/IR/AutoUpgrade.h"
 #include "llvm/IR/Constants.h"
@@ -33,8 +32,6 @@
 #include "llvm/IRReader/IRReader.h"
 #include "llvm/InitializePasses.h"
 #include "llvm/Linker/IRMover.h"
-#include "llvm/Object/ModuleSymbolTable.h"
-#include "llvm/Object/SymbolicFile.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/CommandLine.h"
@@ -1112,12 +1109,13 @@ void llvm::thinLTOFinalizeInModule(Module &TheModule,
         llvm_unreachable("Expected GV to be converted");
     } else {
       // If all copies of the original symbol had global unnamed addr and
-      // linkonce_odr linkage, it should be an auto hide symbol. In that case
-      // the thin link would have marked it as CanAutoHide. Add hidden visibility
-      // to the symbol to preserve the property.
+      // linkonce_odr linkage, or if all of them had local unnamed addr linkage
+      // and are constants, then it should be an auto hide symbol. In that case
+      // the thin link would have marked it as CanAutoHide. Add hidden
+      // visibility to the symbol to preserve the property.
       if (NewLinkage == GlobalValue::WeakODRLinkage &&
           GS->second->canAutoHide()) {
-        assert(GV.hasLinkOnceODRLinkage() && GV.hasGlobalUnnamedAddr());
+        assert(GV.canBeOmittedFromSymbolTable());
         GV.setVisibility(GlobalValue::HiddenVisibility);
       }
 
@@ -1184,7 +1182,7 @@ void llvm::thinLTOInternalizeModule(Module &TheModule,
 
 /// Make alias a clone of its aliasee.
 static Function *replaceAliasWithAliasee(Module *SrcModule, GlobalAlias *GA) {
-  Function *Fn = cast<Function>(GA->getBaseObject());
+  Function *Fn = cast<Function>(GA->getAliaseeObject());
 
   ValueToValueMapTy VMap;
   Function *NewFn = CloneFunction(Fn, VMap);
@@ -1290,12 +1288,12 @@ Expected<bool> FunctionImporter::importFunctions(
         if (Error Err = GA.materialize())
           return std::move(Err);
         // Import alias as a copy of its aliasee.
-        GlobalObject *Base = GA.getBaseObject();
-        if (Error Err = Base->materialize())
+        GlobalObject *GO = GA.getAliaseeObject();
+        if (Error Err = GO->materialize())
           return std::move(Err);
         auto *Fn = replaceAliasWithAliasee(SrcModule.get(), &GA);
-        LLVM_DEBUG(dbgs() << "Is importing aliasee fn " << Base->getGUID()
-                          << " " << Base->getName() << " from "
+        LLVM_DEBUG(dbgs() << "Is importing aliasee fn " << GO->getGUID() << " "
+                          << GO->getName() << " from "
                           << SrcModule->getSourceFileName() << "\n");
         if (EnableImportMetadata) {
           // Add 'thinlto_src_module' metadata for statistics and debugging.
@@ -1330,11 +1328,10 @@ Expected<bool> FunctionImporter::importFunctions(
                << " from " << SrcModule->getSourceFileName() << "\n";
     }
 
-    if (Error Err = Mover.move(
-            std::move(SrcModule), GlobalsToImport.getArrayRef(),
-            [](GlobalValue &, IRMover::ValueAdder) {},
-            /*IsPerformingImport=*/true))
-      report_fatal_error("Function Import: link error: " +
+    if (Error Err = Mover.move(std::move(SrcModule),
+                               GlobalsToImport.getArrayRef(), nullptr,
+                               /*IsPerformingImport=*/true))
+      report_fatal_error(Twine("Function Import: link error: ") +
                          toString(std::move(Err)));
 
     ImportedCount += GlobalsToImport.size();

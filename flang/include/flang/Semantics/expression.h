@@ -13,6 +13,7 @@
 #include "flang/Common/Fortran.h"
 #include "flang/Common/indirection.h"
 #include "flang/Common/restorer.h"
+#include "flang/Common/visit.h"
 #include "flang/Evaluate/characteristics.h"
 #include "flang/Evaluate/check-expression.h"
 #include "flang/Evaluate/expression.h"
@@ -247,6 +248,9 @@ public:
   const Assignment *Analyze(const parser::AssignmentStmt &);
   const Assignment *Analyze(const parser::PointerAssignmentStmt &);
 
+  // Builds a typed Designator from an untyped DataRef
+  MaybeExpr Designate(DataRef &&);
+
 protected:
   int IntegerTypeSpecKind(const parser::IntegerTypeSpec &);
 
@@ -296,11 +300,7 @@ private:
     return Analyze(x.u); // default case
   }
   template <typename... As> MaybeExpr Analyze(const std::variant<As...> &u) {
-    return std::visit(
-        [&](const auto &x) {
-          return Analyze(x);
-        },
-        u);
+    return common::visit([&](const auto &x) { return Analyze(x); }, u);
   }
 
   // Analysis subroutines
@@ -317,7 +317,8 @@ private:
       const parser::SectionSubscript &);
   std::vector<Subscript> AnalyzeSectionSubscripts(
       const std::list<parser::SectionSubscript> &);
-  MaybeExpr Designate(DataRef &&);
+  std::optional<Component> CreateComponent(
+      DataRef &&, const Symbol &, const semantics::Scope &);
   MaybeExpr CompleteSubscripts(ArrayRef &&);
   MaybeExpr ApplySubscripts(DataRef &&, std::vector<Subscript> &&);
   MaybeExpr TopLevelChecks(DataRef &&);
@@ -340,9 +341,10 @@ private:
   using AdjustActuals =
       std::optional<std::function<bool(const Symbol &, ActualArguments &)>>;
   bool ResolveForward(const Symbol &);
-  const Symbol *ResolveGeneric(const Symbol &, const ActualArguments &,
-      const AdjustActuals &, bool mightBeStructureConstructor = false);
-  void EmitGenericResolutionError(const Symbol &);
+  std::pair<const Symbol *, bool /* failure due to NULL() actuals */>
+  ResolveGeneric(const Symbol &, const ActualArguments &, const AdjustActuals &,
+      bool mightBeStructureConstructor = false);
+  void EmitGenericResolutionError(const Symbol &, bool dueToNullActuals);
   const Symbol &AccessSpecific(
       const Symbol &originalGeneric, const Symbol &specific);
   std::optional<CalleeAndArguments> GetCalleeAndArguments(const parser::Name &,
@@ -369,6 +371,7 @@ private:
   bool isWholeAssumedSizeArrayOk_{false};
   bool useSavedTypedExprs_{true};
   bool inWhereBody_{false};
+  bool inDataStmtConstant_{false};
   friend class ArgumentAnalyzer;
 };
 
@@ -472,6 +475,12 @@ public:
   void Post(const parser::WhereBodyConstruct &) {
     --whereDepth_;
     exprAnalyzer_.set_inWhereBody(InWhereBody());
+  }
+
+  bool Pre(const parser::ComponentDefStmt &) {
+    // Already analyzed in name resolution and PDT instantiation;
+    // do not attempt to re-analyze now without type parameters.
+    return false;
   }
 
   template <typename A> bool Pre(const parser::Scalar<A> &x) {

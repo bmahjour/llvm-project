@@ -38,12 +38,12 @@ class X86TTIImpl : public BasicTTIImplBase<X86TTIImpl> {
   const FeatureBitset InlineFeatureIgnoreList = {
       // This indicates the CPU is 64 bit capable not that we are in 64-bit
       // mode.
-      X86::Feature64Bit,
+      X86::FeatureX86_64,
 
       // These features don't have any intrinsics or ABI effect.
       X86::FeatureNOPL,
-      X86::FeatureCMPXCHG16B,
-      X86::FeatureLAHFSAHF,
+      X86::FeatureCX16,
+      X86::FeatureLAHFSAHF64,
 
       // Some older targets can be setup to fold unaligned loads.
       X86::FeatureSSEUnalignedMem,
@@ -68,6 +68,11 @@ class X86TTIImpl : public BasicTTIImplBase<X86TTIImpl> {
       X86::TuningMacroFusion,
       X86::TuningPadShortFunctions,
       X86::TuningPOPCNTFalseDeps,
+      X86::TuningMULCFalseDeps,
+      X86::TuningPERMFalseDeps,
+      X86::TuningRANGEFalseDeps,
+      X86::TuningGETMANTFalseDeps,
+      X86::TuningMULLQFalseDeps,
       X86::TuningSlow3OpsLEA,
       X86::TuningSlowDivide32,
       X86::TuningSlowDivide64,
@@ -80,6 +85,7 @@ class X86TTIImpl : public BasicTTIImplBase<X86TTIImpl> {
       X86::TuningSlowUAMem16,
       X86::TuningPreferMaskRegisters,
       X86::TuningInsertVZEROUPPER,
+      X86::TuningUseSLMArithCosts,
       X86::TuningUseGLMDivSqrtCosts,
 
       // Perf-tuning flags.
@@ -91,8 +97,7 @@ class X86TTIImpl : public BasicTTIImplBase<X86TTIImpl> {
       X86::TuningPrefer256Bit,
 
       // CPU name enums. These just follow CPU string.
-      X86::ProcIntelAtom,
-      X86::ProcIntelSLM,
+      X86::ProcIntelAtom
   };
 
 public:
@@ -131,7 +136,8 @@ public:
       const Instruction *CxtI = nullptr);
   InstructionCost getShuffleCost(TTI::ShuffleKind Kind, VectorType *Tp,
                                  ArrayRef<int> Mask, int Index,
-                                 VectorType *SubTp);
+                                 VectorType *SubTp,
+                                 ArrayRef<const Value *> Args = None);
   InstructionCost getCastInstrCost(unsigned Opcode, Type *Dst, Type *Src,
                                    TTI::CastContextHint CCH,
                                    TTI::TargetCostKind CostKind,
@@ -145,6 +151,10 @@ public:
   InstructionCost getScalarizationOverhead(VectorType *Ty,
                                            const APInt &DemandedElts,
                                            bool Insert, bool Extract);
+  InstructionCost getReplicationShuffleCost(Type *EltTy, int ReplicationFactor,
+                                            int VF,
+                                            const APInt &DemandedDstElts,
+                                            TTI::TargetCostKind CostKind);
   InstructionCost getMemoryOpCost(unsigned Opcode, Type *Src,
                                   MaybeAlign Alignment, unsigned AddressSpace,
                                   TTI::TargetCostKind CostKind,
@@ -199,11 +209,6 @@ public:
       ArrayRef<unsigned> Indices, Align Alignment, unsigned AddressSpace,
       TTI::TargetCostKind CostKind, bool UseMaskForCond = false,
       bool UseMaskForGaps = false);
-  InstructionCost getInterleavedMemoryOpCostAVX2(
-      unsigned Opcode, FixedVectorType *VecTy, unsigned Factor,
-      ArrayRef<unsigned> Indices, Align Alignment, unsigned AddressSpace,
-      TTI::TargetCostKind CostKind, bool UseMaskForCond = false,
-      bool UseMaskForGaps = false);
 
   InstructionCost getIntImmCost(int64_t);
 
@@ -227,6 +232,11 @@ public:
   bool isLegalMaskedStore(Type *DataType, Align Alignment);
   bool isLegalNTLoad(Type *DataType, Align Alignment);
   bool isLegalNTStore(Type *DataType, Align Alignment);
+  bool isLegalBroadcastLoad(Type *ElementTy, ElementCount NumElements) const;
+  bool forceScalarizeMaskedGather(VectorType *VTy, Align Alignment);
+  bool forceScalarizeMaskedScatter(VectorType *VTy, Align Alignment) {
+    return forceScalarizeMaskedGather(VTy, Alignment);
+  }
   bool isLegalMaskedGather(Type *DataType, Align Alignment);
   bool isLegalMaskedScatter(Type *DataType, Align Alignment);
   bool isLegalMaskedExpandLoad(Type *DataType);
@@ -235,14 +245,16 @@ public:
   bool isFCmpOrdCheaperThanFCmpZero(Type *Ty);
   bool areInlineCompatible(const Function *Caller,
                            const Function *Callee) const;
-  bool areFunctionArgsABICompatible(const Function *Caller,
-                                    const Function *Callee,
-                                    SmallPtrSetImpl<Argument *> &Args) const;
+  bool areTypesABICompatible(const Function *Caller, const Function *Callee,
+                             const ArrayRef<Type *> &Type) const;
   TTI::MemCmpExpansionOptions enableMemCmpExpansion(bool OptSize,
                                                     bool IsZeroCmp) const;
+  bool prefersVectorizedAddressing() const;
+  bool supportsEfficientVectorElementLoadStore() const;
   bool enableInterleavedAccessVectorization();
 
 private:
+  bool supportsGather() const;
   InstructionCost getGSScalarCost(unsigned Opcode, Type *DataTy,
                                   bool VariableMask, Align Alignment,
                                   unsigned AddressSpace);

@@ -7,13 +7,17 @@
 //===--------------------------------------------------------------------===//
 #include "llvm/MC/MCAsmInfo.h"
 #include "llvm/MC/MCContext.h"
+#include "llvm/MC/MCInstrInfo.h"
 #include "llvm/MC/MCObjectFileInfo.h"
+#include "llvm/MC/MCParser/MCAsmLexer.h"
 #include "llvm/MC/MCParser/MCTargetAsmParser.h"
 #include "llvm/MC/MCRegisterInfo.h"
 #include "llvm/MC/MCStreamer.h"
+#include "llvm/MC/MCSubtargetInfo.h"
+#include "llvm/MC/MCSymbol.h"
+#include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/SourceMgr.h"
-#include "llvm/Support/TargetRegistry.h"
 #include "llvm/Support/TargetSelect.h"
 
 #include "gtest/gtest.h"
@@ -550,9 +554,11 @@ TEST_F(SystemZAsmLexerZOS, CheckPrintAcceptableSymbol) {
 }
 
 TEST_F(SystemZAsmLexerLinux, CheckPrintAcceptableSymbol) {
-  std::string AsmStr = "ab13_$.@";
+  std::string AsmStr = "ab13_$.";
   EXPECT_EQ(true, MAI->isValidUnquotedName(AsmStr));
-  AsmStr += "#";
+  AsmStr = "ab13_$.@";
+  EXPECT_EQ(false, MAI->isValidUnquotedName(AsmStr));
+  AsmStr = "ab13_$.#";
   EXPECT_EQ(false, MAI->isValidUnquotedName(AsmStr));
 }
 

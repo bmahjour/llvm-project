@@ -3,7 +3,6 @@
 
 // CHECK-DAG: [[$MAP_PLUS_1:#map[0-9]+]] = affine_map<(d0) -> (d0 + 1)>
 // CHECK-DAG: [[$MAP_DIV_OFFSET:#map[0-9]+]] = affine_map<()[s0] -> (((s0 - 1) floordiv 2) * 2 + 1)>
-// CHECK-DAG: [[$MAP_MULTI_RES:#map[0-9]+]] = affine_map<()[s0, s1] -> ((s0 floordiv 2) * 2, (s1 floordiv 2) * 2, 1024)>
 // CHECK-DAG: [[$MAP_SYM_UB:#map[0-9]+]] = affine_map<()[s0, s1] -> (s0, s1, 1024)>
 
 // UJAM-FOUR-DAG: [[$UBMAP:#map[0-9]+]] = affine_map<()[s0] -> (s0 + 8)>
@@ -12,7 +11,7 @@
 // UJAM-FOUR-DAG: [[$MAP_PLUS_3:#map[0-9]+]] = affine_map<(d0) -> (d0 + 3)>
 
 // CHECK-LABEL: func @unroll_jam_imperfect_nest() {
-func @unroll_jam_imperfect_nest() {
+func.func @unroll_jam_imperfect_nest() {
   affine.for %i = 0 to 101 {
     %x = "addi32"(%i, %i) : (index, index) -> i32
     affine.for %j = 0 to 17 {
@@ -49,7 +48,7 @@ func @unroll_jam_imperfect_nest() {
 
 // CHECK-LABEL: func @loop_nest_unknown_count_1
 // CHECK-SAME: [[N:arg[0-9]+]]: index
-func @loop_nest_unknown_count_1(%N : index) {
+func.func @loop_nest_unknown_count_1(%N : index) {
   // CHECK-NEXT: affine.for %{{.*}} = 1 to [[$MAP_DIV_OFFSET]]()[%[[N]]] step 2 {
   // CHECK-NEXT:   affine.for %{{.*}} = 1 to 100 {
   // CHECK-NEXT:     "foo"() : () -> i32
@@ -72,7 +71,7 @@ func @loop_nest_unknown_count_1(%N : index) {
 
 // UJAM-FOUR-LABEL: func @loop_nest_unknown_count_2
 // UJAM-FOUR-SAME: %[[N:arg[0-9]+]]: index
-func @loop_nest_unknown_count_2(%N : index) {
+func.func @loop_nest_unknown_count_2(%N : index) {
   // UJAM-FOUR-NEXT: affine.for [[IV0:%arg[0-9]+]] = %[[N]] to  [[$UBMAP]]()[%[[N]]] step 4 {
   // UJAM-FOUR-NEXT:   affine.for [[IV1:%arg[0-9]+]] = 1 to 100 {
   // UJAM-FOUR-NEXT:     "foo"([[IV0]])
@@ -101,24 +100,19 @@ func @loop_nest_unknown_count_2(%N : index) {
 // CHECK-SAME: [[M:arg[0-9]+]]: index
 // CHECK-SAME: [[N:arg[0-9]+]]: index
 // CHECK-SAME: [[K:arg[0-9]+]]: index
-func @loop_nest_symbolic_and_min_upper_bound(%M : index, %N : index, %K : index) {
+func.func @loop_nest_symbolic_and_min_upper_bound(%M : index, %N : index, %K : index) {
   affine.for %i = 0 to min affine_map<()[s0, s1] -> (s0, s1, 1024)>()[%M, %N] {
     affine.for %j = 0 to %K {
-      "foo"(%i, %j) : (index, index) -> ()
+      "test.foo"(%i, %j) : (index, index) -> ()
     }
   }
   return
 }
-// CHECK-NEXT:  affine.for [[IV0:%arg[0-9]+]] = 0 to min [[$MAP_MULTI_RES]]()[%[[M]], %[[N]]] step 2 {
+// No unroll-and-jam possible here as the lower bound for the cleanup loop won't
+// be representable.
+// CHECK-NEXT:  affine.for [[IV0:%arg[0-9]+]] = 0 to min #map{{.*}}()[%[[M]], %[[N]]] {
 // CHECK-NEXT:    affine.for [[IV1:%arg[0-9]+]] = 0 to %[[K]] {
-// CHECK-NEXT:      "foo"([[IV0]], [[IV1]])
-// CHECK-NEXT:      [[RES:%[0-9]+]] = affine.apply [[$MAP_PLUS_1]]([[IV0]])
-// CHECK-NEXT:      "foo"([[RES]], [[IV1]])
-// CHECK-NEXT:    }
-// CHECK-NEXT:  }
-// CHECK-NEXT:  affine.for [[IV0]] = max [[$MAP_MULTI_RES]]()[%[[M]], %[[N]]] to min [[$MAP_SYM_UB]]()[%[[M]], %[[N]]] {
-// CHECK-NEXT:    affine.for [[IV1]] = 0 to %[[K]] {
-// CHECK-NEXT:      "foo"([[IV0]], [[IV1]])
+// CHECK-NEXT:      "test.foo"([[IV0]], [[IV1]])
 // CHECK-NEXT:    }
 // CHECK-NEXT:  }
 // CHECK-NEXT:  return
@@ -126,7 +120,7 @@ func @loop_nest_symbolic_and_min_upper_bound(%M : index, %N : index, %K : index)
 // The inner loop trip count changes each iteration of outer loop.
 // Do no unroll-and-jam.
 // CHECK-LABEL: func @no_unroll_jam_dependent_ubound
-func @no_unroll_jam_dependent_ubound(%in0: memref<?xf32, 1>) {
+func.func @no_unroll_jam_dependent_ubound(%in0: memref<?xf32, 1>) {
   affine.for %i = 0 to 100 {
     affine.for %k = 0 to affine_map<(d0) -> (d0 + 1)>(%i) {
       %y = "addi32"(%k, %k) : (index, index) -> i32
@@ -143,9 +137,9 @@ func @no_unroll_jam_dependent_ubound(%in0: memref<?xf32, 1>) {
 
 // Inner loop with one iter_arg.
 // CHECK-LABEL: func @unroll_jam_one_iter_arg
-func @unroll_jam_one_iter_arg() {
+func.func @unroll_jam_one_iter_arg() {
   affine.for %i = 0 to 101 {
-    %cst = constant 1 : i32
+    %cst = arith.constant 1 : i32
     %x = "addi32"(%i, %i) : (index, index) -> i32
     %red = affine.for %j = 0 to 17 iter_args(%acc = %cst) -> (i32) {
       %y = "bar"(%i, %j, %acc) : (index, index, i32) -> i32
@@ -156,10 +150,10 @@ func @unroll_jam_one_iter_arg() {
   return
 }
 // CHECK:      affine.for [[IV0:%arg[0-9]+]] = 0 to 100 step 2 {
-// CHECK-NEXT:   [[CONST1:%[a-zA-Z0-9_]*]] = constant 1 : i32
+// CHECK-NEXT:   [[CONST1:%[a-zA-Z0-9_]*]] = arith.constant 1 : i32
 // CHECK-NEXT:   [[RES1:%[0-9]+]] = "addi32"([[IV0]], [[IV0]])
 // CHECK-NEXT:   [[INC:%[0-9]+]] = affine.apply [[$MAP_PLUS_1]]([[IV0]])
-// CHECK-NEXT:   [[CONST2:%[a-zA-Z0-9_]*]] = constant 1 : i32
+// CHECK-NEXT:   [[CONST2:%[a-zA-Z0-9_]*]] = arith.constant 1 : i32
 // CHECK-NEXT:   [[RES2:%[0-9]+]] = "addi32"([[INC]], [[INC]])
 // CHECK-NEXT:   [[RES3:%[0-9]+]]:2 = affine.for [[IV1:%arg[0-9]+]] = 0 to 17 iter_args([[ACC1:%arg[0-9]+]] = [[CONST1]], [[ACC2:%arg[0-9]+]] = [[CONST2]]) -> (i32, i32) {
 // CHECK-NEXT:     [[RES4:%[0-9]+]] = "bar"([[IV0]], [[IV1]], [[ACC1]])
@@ -183,10 +177,10 @@ func @unroll_jam_one_iter_arg() {
 
 // Inner loop with multiple iter_args.
 // CHECK-LABEL: func @unroll_jam_iter_args
-func @unroll_jam_iter_args() {
+func.func @unroll_jam_iter_args() {
   affine.for %i = 0 to 101 {
-    %cst = constant 0 : i32
-    %cst1 = constant 1 : i32
+    %cst = arith.constant 0 : i32
+    %cst1 = arith.constant 1 : i32
     %x = "addi32"(%i, %i) : (index, index) -> i32
     %red:2 = affine.for %j = 0 to 17 iter_args(%acc = %cst, %acc1 = %cst1) -> (i32, i32) {
       %y = "bar"(%i, %j, %acc) : (index, index, i32) -> i32
@@ -198,12 +192,12 @@ func @unroll_jam_iter_args() {
   return
 }
 // CHECK:      affine.for [[IV0:%arg[0-9]+]] = 0 to 100 step 2 {
-// CHECK-NEXT:   [[CONST0:%[a-zA-Z0-9_]*]] = constant 0 : i32
-// CHECK-NEXT:   [[CONST1:%[a-zA-Z0-9_]*]] = constant 1 : i32
+// CHECK-NEXT:   [[CONST0:%[a-zA-Z0-9_]*]] = arith.constant 0 : i32
+// CHECK-NEXT:   [[CONST1:%[a-zA-Z0-9_]*]] = arith.constant 1 : i32
 // CHECK-NEXT:   [[RES1:%[0-9]+]] = "addi32"([[IV0]], [[IV0]])
 // CHECK-NEXT:   [[INC:%[0-9]+]] = affine.apply [[$MAP_PLUS_1]]([[IV0]])
-// CHECK-NEXT:   [[CONST2:%[a-zA-Z0-9_]*]] = constant 0 : i32
-// CHECK-NEXT:   [[CONST3:%[a-zA-Z0-9_]*]] = constant 1 : i32
+// CHECK-NEXT:   [[CONST2:%[a-zA-Z0-9_]*]] = arith.constant 0 : i32
+// CHECK-NEXT:   [[CONST3:%[a-zA-Z0-9_]*]] = arith.constant 1 : i32
 // CHECK-NEXT:   [[RES2:%[0-9]+]] = "addi32"([[INC]], [[INC]])
 // CHECK-NEXT:   [[RES3:%[0-9]+]]:4 = affine.for [[IV1:%arg[0-9]+]] = 0 to 17 iter_args([[ACC0:%arg[0-9]+]] = [[CONST0]], [[ACC1:%arg[0-9]+]] = [[CONST1]],
 // CHECK-SAME:   [[ACC2:%arg[0-9]+]] = [[CONST2]], [[ACC3:%arg[0-9]+]] = [[CONST3]]) -> (i32, i32, i32, i32) {
@@ -234,7 +228,7 @@ func @unroll_jam_iter_args() {
 // operand .
 // CHECK-LABEL: func @unroll_jam_iter_args_func_arg
 // CHECK-SAME:  [[INIT:%arg[0-9]+]]: i32
-func @unroll_jam_iter_args_func_arg(%in: i32) {
+func.func @unroll_jam_iter_args_func_arg(%in: i32) {
   affine.for %i = 0 to 101 {
     %x = "addi32"(%i, %i) : (index, index) -> i32
     %red = affine.for %j = 0 to 17 iter_args(%acc = %in) -> (i32) {
@@ -271,9 +265,9 @@ func @unroll_jam_iter_args_func_arg(%in: i32) {
 // Nested inner loops, each with one iter_arg. The inner most loop uses its
 // outer loop's iter_arg as its iter operand.
 // CHECK-LABEL: func @unroll_jam_iter_args_nested
-func @unroll_jam_iter_args_nested() {
+func.func @unroll_jam_iter_args_nested() {
   affine.for %i = 0 to 101 {
-    %cst = constant 1 : i32
+    %cst = arith.constant 1 : i32
     %x = "addi32"(%i, %i) : (index, index) -> i32
     %red = affine.for %j = 0 to 17 iter_args(%acc = %cst) -> (i32) {
       %red1 = affine.for %k = 0 to 35 iter_args(%acc1 = %acc) -> (i32) {
@@ -287,10 +281,10 @@ func @unroll_jam_iter_args_nested() {
   return
 }
 // CHECK:      affine.for [[IV0:%arg[0-9]+]] = 0 to 100 step 2 {
-// CHECK-NEXT:   [[CONST1:%[a-zA-Z0-9_]*]] = constant 1 : i32
+// CHECK-NEXT:   [[CONST1:%[a-zA-Z0-9_]*]] = arith.constant 1 : i32
 // CHECK-NEXT:   [[RES1:%[0-9]+]] = "addi32"([[IV0]], [[IV0]])
 // CHECK-NEXT:   [[INC:%[0-9]+]] = affine.apply [[$MAP_PLUS_1]]([[IV0]])
-// CHECK-NEXT:   [[CONST2:%[a-zA-Z0-9_]*]] = constant 1 : i32
+// CHECK-NEXT:   [[CONST2:%[a-zA-Z0-9_]*]] = arith.constant 1 : i32
 // CHECK-NEXT:   [[RES2:%[0-9]+]] = "addi32"([[INC]], [[INC]])
 // CHECK-NEXT:   [[RES3:%[0-9]+]]:2 = affine.for [[IV1:%arg[0-9]+]] = 0 to 17 iter_args([[ACC1:%arg[0-9]+]] = [[CONST1]], [[ACC2:%arg[0-9]+]] = [[CONST2]]) -> (i32, i32) {
 // CHECK-NEXT:     [[RES4:%[0-9]+]]:2 = affine.for [[IV2:%arg[0-9]+]] = 0 to 35 iter_args([[ACC3:%arg[0-9]+]] = [[ACC1]], [[ACC4:%arg[0-9]+]] = [[ACC2]]) -> (i32, i32) {
@@ -321,9 +315,9 @@ func @unroll_jam_iter_args_nested() {
 // Nested inner loops, each with one iter_arg. One loop uses its sibling loop's
 // result as its iter operand.
 // CHECK-LABEL: func @unroll_jam_iter_args_nested_affine_for_result
-func @unroll_jam_iter_args_nested_affine_for_result() {
+func.func @unroll_jam_iter_args_nested_affine_for_result() {
   affine.for %i = 0 to 101 {
-    %cst = constant 1 : i32
+    %cst = arith.constant 1 : i32
     %x = "addi32"(%i, %i) : (index, index) -> i32
     %red = affine.for %j = 0 to 17 iter_args(%acc = %cst) -> (i32) {
       %red1 = affine.for %k = 0 to 35 iter_args(%acc1 = %acc) -> (i32) {
@@ -341,10 +335,10 @@ func @unroll_jam_iter_args_nested_affine_for_result() {
   return
 }
 // CHECK:      affine.for [[IV0:%arg[0-9]+]] = 0 to 100 step 2 {
-// CHECK-NEXT:   [[CONST1:%[a-zA-Z0-9_]*]] = constant 1 : i32
+// CHECK-NEXT:   [[CONST1:%[a-zA-Z0-9_]*]] = arith.constant 1 : i32
 // CHECK-NEXT:   [[RES1:%[0-9]+]] = "addi32"([[IV0]], [[IV0]])
 // CHECK-NEXT:   [[INC:%[0-9]+]] = affine.apply [[$MAP_PLUS_1]]([[IV0]])
-// CHECK-NEXT:   [[CONST2:%[a-zA-Z0-9_]*]] = constant 1 : i32
+// CHECK-NEXT:   [[CONST2:%[a-zA-Z0-9_]*]] = arith.constant 1 : i32
 // CHECK-NEXT:   [[RES2:%[0-9]+]] = "addi32"([[INC]], [[INC]])
 // CHECK-NEXT:   [[RES3:%[0-9]+]]:2 = affine.for [[IV1:%arg[0-9]+]] = 0 to 17 iter_args([[ACC1:%arg[0-9]+]] = [[CONST1]], [[ACC2:%arg[0-9]+]] = [[CONST2]]) -> (i32, i32) {
 // CHECK-NEXT:     [[RES4:%[0-9]+]]:2 = affine.for [[IV2:%arg[0-9]+]] = 0 to 35 iter_args([[ACC3:%arg[0-9]+]] = [[ACC1]], [[ACC4:%arg[0-9]+]] = [[ACC2]]) -> (i32, i32) {
@@ -385,9 +379,9 @@ func @unroll_jam_iter_args_nested_affine_for_result() {
 // Nested inner loops, each with one or more iter_args. Yeild the same value
 // multiple times.
 // CHECK-LABEL: func @unroll_jam_iter_args_nested_yield
-func @unroll_jam_iter_args_nested_yield() {
+func.func @unroll_jam_iter_args_nested_yield() {
   affine.for %i = 0 to 101 {
-    %cst = constant 1 : i32
+    %cst = arith.constant 1 : i32
     %x = "addi32"(%i, %i) : (index, index) -> i32
     %red:3 = affine.for %j = 0 to 17 iter_args(%acc = %cst, %acc1 = %cst, %acc2 = %cst) -> (i32, i32, i32) {
       %red1 = affine.for %k = 0 to 35 iter_args(%acc3 = %acc) -> (i32) {
@@ -405,10 +399,10 @@ func @unroll_jam_iter_args_nested_yield() {
   return
 }
 // CHECK:      affine.for [[IV0:%arg[0-9]+]] = 0 to 100 step 2 {
-// CHECK-NEXT:   [[CONST1:%[a-zA-Z0-9_]*]] = constant 1 : i32
+// CHECK-NEXT:   [[CONST1:%[a-zA-Z0-9_]*]] = arith.constant 1 : i32
 // CHECK-NEXT:   [[RES1:%[0-9]+]] = "addi32"([[IV0]], [[IV0]])
 // CHECK-NEXT:   [[INC:%[0-9]+]] = affine.apply [[$MAP_PLUS_1]]([[IV0]])
-// CHECK-NEXT:   [[CONST2:%[a-zA-Z0-9_]*]] = constant 1 : i32
+// CHECK-NEXT:   [[CONST2:%[a-zA-Z0-9_]*]] = arith.constant 1 : i32
 // CHECK-NEXT:   [[RES2:%[0-9]+]] = "addi32"([[INC]], [[INC]])
 // CHECK-NEXT:   [[RES3:%[0-9]+]]:6 = affine.for [[IV1:%arg[0-9]+]] = 0 to 17 iter_args([[ACC1:%arg[0-9]+]] = [[CONST1]], [[ACC2:%arg[0-9]+]] = [[CONST1]],
 // CHECK-SAME:   [[ACC3:%arg[0-9]+]] = [[CONST1]], [[ACC4:%arg[0-9]+]] = [[CONST2]], [[ACC5:%arg[0-9]+]] = [[CONST2]], [[ACC6:%arg[0-9]+]] = [[CONST2]]) -> (i32, i32, i32, i32, i32, i32) {
@@ -450,68 +444,68 @@ func @unroll_jam_iter_args_nested_yield() {
 
 // CHECK-LABEL: func @unroll_jam_nested_iter_args_mulf
 // CHECK-SAME:  [[INIT0:%arg[0-9]+]]: f32, [[INIT1:%arg[0-9]+]]: f32
-func @unroll_jam_nested_iter_args_mulf(%arg0: memref<21x30xf32, 1>, %init : f32, %init1 : f32) {
+func.func @unroll_jam_nested_iter_args_mulf(%arg0: memref<21x30xf32, 1>, %init : f32, %init1 : f32) {
   %0 = affine.for %arg3 = 0 to 21 iter_args(%arg4 = %init) -> (f32) {
     %1 = affine.for %arg5 = 0 to 30 iter_args(%arg6 = %init1) -> (f32) {
       %3 = affine.load %arg0[%arg3, %arg5] : memref<21x30xf32, 1>
-      %4 = addf %arg6, %3 : f32
+      %4 = arith.addf %arg6, %3 : f32
       affine.yield %4 : f32
     }
-    %2 = mulf %arg4, %1 : f32
+    %2 = arith.mulf %arg4, %1 : f32
     affine.yield %2 : f32
   }
   return
 }
 
-// CHECK:      %[[CONST0:[a-zA-Z0-9_]*]] = constant 20 : index
+// CHECK:      %[[CONST0:[a-zA-Z0-9_]*]] = arith.constant 20 : index
 // CHECK-NEXT: [[RES:%[0-9]+]]:2 = affine.for %[[IV0:arg[0-9]+]] = 0 to 20 step 2 iter_args([[ACC0:%arg[0-9]+]] = [[INIT0]], [[ACC1:%arg[0-9]+]] = [[INIT0]]) -> (f32, f32) {
 // CHECK-NEXT:   [[RES1:%[0-9]+]]:2 = affine.for %[[IV1:arg[0-9]+]] = 0 to 30 iter_args([[ACC2:%arg[0-9]+]] = [[INIT1]], [[ACC3:%arg[0-9]+]] = [[INIT1]]) -> (f32, f32) {
 // CHECK-NEXT:     [[LOAD1:%[0-9]+]] = affine.load {{.*}}[%[[IV0]], %[[IV1]]]
-// CHECK-NEXT:     [[ADD1:%[0-9]+]] = addf [[ACC2]], [[LOAD1]] : f32
+// CHECK-NEXT:     [[ADD1:%[0-9]+]] = arith.addf [[ACC2]], [[LOAD1]] : f32
 // CHECK-NEXT:     %[[INC1:[0-9]+]] = affine.apply [[$MAP_PLUS_1]](%[[IV0]])
 // CHECK-NEXT:     [[LOAD2:%[0-9]+]] = affine.load {{.*}}[%[[INC1]], %[[IV1]]]
-// CHECK-NEXT:     [[ADD2:%[0-9]+]] = addf [[ACC3]], [[LOAD2]] : f32
+// CHECK-NEXT:     [[ADD2:%[0-9]+]] = arith.addf [[ACC3]], [[LOAD2]] : f32
 // CHECK-NEXT:     affine.yield [[ADD1]], [[ADD2]]
 // CHECK-NEXT:   }
-// CHECK-NEXT:   [[MUL1:%[0-9]+]] = mulf [[ACC0]], [[RES1]]#0 : f32
+// CHECK-NEXT:   [[MUL1:%[0-9]+]] = arith.mulf [[ACC0]], [[RES1]]#0 : f32
 // CHECK-NEXT:   affine.apply
-// CHECK-NEXT:   [[MUL2:%[0-9]+]] = mulf [[ACC1]], [[RES1]]#1 : f32
+// CHECK-NEXT:   [[MUL2:%[0-9]+]] = arith.mulf [[ACC1]], [[RES1]]#1 : f32
 // CHECK-NEXT:   affine.yield [[MUL1]], [[MUL2]]
 // CHECK-NEXT: }
 // Reduction op.
-// CHECK-NEXT: [[MUL3:%[0-9]+]] = mulf [[RES]]#0, [[RES]]#1 : f32
+// CHECK-NEXT: [[MUL3:%[0-9]+]] = arith.mulf [[RES]]#0, [[RES]]#1 : f32
 // Cleanup loop (single iteration).
 // CHECK-NEXT: [[RES2:%[0-9]+]] = affine.for %[[IV2:arg[0-9]+]] = 0 to 30 iter_args([[ACC4:%arg[0-9]+]] = [[INIT1]]) -> (f32) {
 // CHECK-NEXT:   [[LOAD3:%[0-9]+]] = affine.load {{.*}}[%[[CONST0]], %[[IV2]]]
-// CHECK-NEXT:   [[ADD3:%[0-9]+]] = addf [[ACC4]], [[LOAD3]] : f32
+// CHECK-NEXT:   [[ADD3:%[0-9]+]] = arith.addf [[ACC4]], [[LOAD3]] : f32
 // CHECK-NEXT:   affine.yield [[ADD3]] : f32
 // CHECK-NEXT: }
-// CHECK-NEXT: [[MUL4:%[0-9]+]] = mulf [[MUL3]], [[RES2]] : f32
+// CHECK-NEXT: [[MUL4:%[0-9]+]] = arith.mulf [[MUL3]], [[RES2]] : f32
 // CHECK-NEXT: return
 
 // CHECK-LABEL: func @unroll_jam_iter_args_addi
 // CHECK-SAME:  [[INIT0:%arg[0-9]+]]: i32
-func @unroll_jam_iter_args_addi(%arg0: memref<21xi32, 1>, %init : i32) {
+func.func @unroll_jam_iter_args_addi(%arg0: memref<21xi32, 1>, %init : i32) {
   %0 = affine.for %arg3 = 0 to 21 iter_args(%arg4 = %init) -> (i32) {
     %1 = affine.load %arg0[%arg3] : memref<21xi32, 1>
-    %2 = addi %arg4, %1 : i32
+    %2 = arith.addi %arg4, %1 : i32
     affine.yield %2 : i32
   }
   return
 }
 
-// CHECK:      %[[CONST0:[a-zA-Z0-9_]*]] = constant 20 : index
+// CHECK:      %[[CONST0:[a-zA-Z0-9_]*]] = arith.constant 20 : index
 // CHECK-NEXT: [[RES:%[0-9]+]]:2 = affine.for %[[IV0:arg[0-9]+]] = 0 to 20 step 2 iter_args([[ACC0:%arg[0-9]+]] = [[INIT0]], [[ACC1:%arg[0-9]+]] = [[INIT0]]) -> (i32, i32) {
 // CHECK-NEXT:   [[LOAD1:%[0-9]+]] = affine.load {{.*}}[%[[IV0]]]
-// CHECK-NEXT:   [[ADD1:%[0-9]+]] = addi [[ACC0]], [[LOAD1]] : i32
+// CHECK-NEXT:   [[ADD1:%[0-9]+]] = arith.addi [[ACC0]], [[LOAD1]] : i32
 // CHECK-NEXT:   %[[INC1:[0-9]+]] = affine.apply [[$MAP_PLUS_1]](%[[IV0]])
 // CHECK-NEXT:   [[LOAD2:%[0-9]+]] = affine.load {{.*}}[%[[INC1]]]
-// CHECK-NEXT:   [[ADD2:%[0-9]+]] = addi [[ACC1]], [[LOAD2]] : i32
+// CHECK-NEXT:   [[ADD2:%[0-9]+]] = arith.addi [[ACC1]], [[LOAD2]] : i32
 // CHECK-NEXT:   affine.yield [[ADD1]], [[ADD2]]
 // CHECK-NEXT: }
 // Reduction op.
-// CHECK-NEXT: [[ADD3:%[0-9]+]] = addi [[RES]]#0, [[RES]]#1 : i32
+// CHECK-NEXT: [[ADD3:%[0-9]+]] = arith.addi [[RES]]#0, [[RES]]#1 : i32
 // Cleanup loop (single iteration).
 // CHECK-NEXT: [[LOAD3:%[0-9]+]] = affine.load {{.*}}[%[[CONST0]]]
-// CHECK-NEXT: [[ADD4:%[0-9]+]] = addi [[ADD3]], [[LOAD3]] : i32
+// CHECK-NEXT: [[ADD4:%[0-9]+]] = arith.addi [[ADD3]], [[LOAD3]] : i32
 // CHECK-NEXT: return

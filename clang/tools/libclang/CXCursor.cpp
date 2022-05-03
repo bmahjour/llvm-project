@@ -823,6 +823,21 @@ CXCursor cxcursor::MakeCXCursor(const Stmt *S, const Decl *Parent,
   case Stmt::OMPMaskedDirectiveClass:
     K = CXCursor_OMPMaskedDirective;
     break;
+  case Stmt::OMPGenericLoopDirectiveClass:
+    K = CXCursor_OMPGenericLoopDirective;
+    break;
+  case Stmt::OMPTeamsGenericLoopDirectiveClass:
+    K = CXCursor_OMPTeamsGenericLoopDirective;
+    break;
+  case Stmt::OMPTargetTeamsGenericLoopDirectiveClass:
+    K = CXCursor_OMPTargetTeamsGenericLoopDirective;
+    break;
+  case Stmt::OMPParallelGenericLoopDirectiveClass:
+    K = CXCursor_OMPParallelGenericLoopDirective;
+    break;
+  case Stmt::OMPTargetParallelGenericLoopDirectiveClass:
+    K = CXCursor_OMPTargetParallelGenericLoopDirective;
+    break;
   case Stmt::BuiltinBitCastExprClass:
     K = CXCursor_BuiltinBitCastExpr;
   }
@@ -1708,7 +1723,7 @@ CXType clang_Cursor_getReceiverType(CXCursor C) {
     ME = dyn_cast_or_null<MemberExpr>(CE->getCallee());
 
   if (ME) {
-    if (dyn_cast_or_null<CXXMethodDecl>(ME->getMemberDecl())) {
+    if (isa_and_nonnull<CXXMethodDecl>(ME->getMemberDecl())) {
       auto receiverTy = ME->getBase()->IgnoreImpCasts()->getType();
       return cxtype::MakeCXType(receiverTy, TU);
     }

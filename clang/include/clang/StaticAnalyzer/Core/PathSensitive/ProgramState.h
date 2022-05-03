@@ -47,8 +47,6 @@ typedef std::unique_ptr<StoreManager>(*StoreManagerCreator)(
 // ProgramStateTrait - Traits used by the Generic Data Map of a ProgramState.
 //===----------------------------------------------------------------------===//
 
-template <typename T> struct ProgramStatePartialTrait;
-
 template <typename T> struct ProgramStateTrait {
   typedef typename T::data_type data_type;
   static inline void *MakeVoidPtr(data_type D) { return (void*) D; }
@@ -307,10 +305,6 @@ public:
   /// Get the lvalue for a base class object reference.
   Loc getLValue(const CXXRecordDecl *BaseClass, const SubRegion *Super,
                 bool IsVirtual) const;
-
-  /// Get the lvalue for a parameter.
-  Loc getLValue(const Expr *Call, unsigned Index,
-                const LocationContext *LC) const;
 
   /// Get the lvalue for a variable reference.
   Loc getLValue(const VarDecl *D, const LocationContext *LC) const;

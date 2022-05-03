@@ -87,7 +87,7 @@ static MCOperand lowerSymbolOperand(const MachineOperand &MO, MCSymbol *Sym,
   return MCOperand::createExpr(ME);
 }
 
-bool llvm::LowerRISCVMachineOperandToMCOperand(const MachineOperand &MO,
+bool llvm::lowerRISCVMachineOperandToMCOperand(const MachineOperand &MO,
                                                MCOperand &MCOp,
                                                const AsmPrinter &AP) {
   switch (MO.getType()) {
@@ -172,7 +172,7 @@ static bool lowerRISCVVMachineInstrToMCInst(const MachineInstr *MI,
     default:
       llvm_unreachable("Unknown operand type");
     case MachineOperand::MO_Register: {
-      unsigned Reg = MO.getReg();
+      Register Reg = MO.getReg();
 
       if (RISCV::VRM2RegClass.contains(Reg) ||
           RISCV::VRM4RegClass.contains(Reg) ||
@@ -214,7 +214,7 @@ bool llvm::lowerRISCVMachineInstrToMCInst(const MachineInstr *MI, MCInst &OutMI,
 
   for (const MachineOperand &MO : MI->operands()) {
     MCOperand MCOp;
-    if (LowerRISCVMachineOperandToMCOperand(MO, MCOp, AP))
+    if (lowerRISCVMachineOperandToMCOperand(MO, MCOp, AP))
       OutMI.addOperand(MCOp);
   }
 

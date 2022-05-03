@@ -7,7 +7,6 @@
 //===----------------------------------------------------------------------===//
 
 // UNSUPPORTED: c++03, c++11, c++14, c++17
-// UNSUPPORTED: libcpp-no-concepts
 // UNSUPPORTED: libcpp-has-no-incomplete-ranges
 
 // constexpr explicit common_view(V r);
@@ -24,8 +23,8 @@ constexpr bool test() {
   int buf[8] = {1, 2, 3, 4, 5, 6, 7, 8};
 
   {
-    ContiguousView view{buf, buf + 8};
-    std::ranges::common_view<ContiguousView> common(std::move(view));
+    MoveOnlyView view{buf, buf + 8};
+    std::ranges::common_view<MoveOnlyView> common(std::move(view));
     assert(std::move(common).base().begin_ == buf);
   }
 
@@ -45,8 +44,8 @@ int main(int, char**) {
   // Can't compare common_iterator inside constexpr
   {
     int buf[8] = {1, 2, 3, 4, 5, 6, 7, 8};
-    ContiguousView view{buf, buf + 8};
-    std::ranges::common_view<ContiguousView> const common(std::move(view));
+    MoveOnlyView view{buf, buf + 8};
+    std::ranges::common_view<MoveOnlyView> const common(std::move(view));
     assert(common.begin() == buf);
   }
 

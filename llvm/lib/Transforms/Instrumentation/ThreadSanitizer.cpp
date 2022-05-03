@@ -44,7 +44,6 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Transforms/Instrumentation.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Utils/EscapeEnumerator.h"
 #include "llvm/Transforms/Utils/Local.h"
@@ -110,7 +109,7 @@ namespace {
 /// the module.
 struct ThreadSanitizer {
   ThreadSanitizer() {
-    // Sanity check options and warn user.
+    // Check options and warn user.
     if (ClInstrumentReadBeforeWrite && ClCompoundReadBeforeWrite) {
       errs()
           << "warning: Option -tsan-compound-read-before-write has no effect "
@@ -174,19 +173,6 @@ private:
   FunctionCallee MemmoveFn, MemcpyFn, MemsetFn;
 };
 
-struct ThreadSanitizerLegacyPass : FunctionPass {
-  ThreadSanitizerLegacyPass() : FunctionPass(ID) {
-    initializeThreadSanitizerLegacyPassPass(*PassRegistry::getPassRegistry());
-  }
-  StringRef getPassName() const override;
-  void getAnalysisUsage(AnalysisUsage &AU) const override;
-  bool runOnFunction(Function &F) override;
-  bool doInitialization(Module &M) override;
-  static char ID; // Pass identification, replacement for typeid.
-private:
-  Optional<ThreadSanitizer> TSan;
-};
-
 void insertModuleCtor(Module &M) {
   getOrCreateSanitizerCtorAndInitFunctions(
       M, kTsanModuleCtorName, kTsanInitName, /*InitArgTypes=*/{},
@@ -211,38 +197,6 @@ PreservedAnalyses ModuleThreadSanitizerPass::run(Module &M,
   insertModuleCtor(M);
   return PreservedAnalyses::none();
 }
-
-char ThreadSanitizerLegacyPass::ID = 0;
-INITIALIZE_PASS_BEGIN(ThreadSanitizerLegacyPass, "tsan",
-                      "ThreadSanitizer: detects data races.", false, false)
-INITIALIZE_PASS_DEPENDENCY(TargetLibraryInfoWrapperPass)
-INITIALIZE_PASS_END(ThreadSanitizerLegacyPass, "tsan",
-                    "ThreadSanitizer: detects data races.", false, false)
-
-StringRef ThreadSanitizerLegacyPass::getPassName() const {
-  return "ThreadSanitizerLegacyPass";
-}
-
-void ThreadSanitizerLegacyPass::getAnalysisUsage(AnalysisUsage &AU) const {
-  AU.addRequired<TargetLibraryInfoWrapperPass>();
-}
-
-bool ThreadSanitizerLegacyPass::doInitialization(Module &M) {
-  insertModuleCtor(M);
-  TSan.emplace();
-  return true;
-}
-
-bool ThreadSanitizerLegacyPass::runOnFunction(Function &F) {
-  auto &TLI = getAnalysis<TargetLibraryInfoWrapperPass>().getTLI(F);
-  TSan->sanitizeFunction(F, TLI);
-  return true;
-}
-
-FunctionPass *llvm::createThreadSanitizerLegacyPassPass() {
-  return new ThreadSanitizerLegacyPass();
-}
-
 void ThreadSanitizer::initialize(Module &M) {
   const DataLayout &DL = M.getDataLayout();
   IntptrTy = DL.getIntPtrType(M.getContext());
@@ -527,19 +481,14 @@ void ThreadSanitizer::chooseInstructionsToInstrument(
   Local.clear();
 }
 
-static bool isAtomic(Instruction *I) {
+static bool isTsanAtomic(const Instruction *I) {
   // TODO: Ask TTI whether synchronization scope is between threads.
-  if (LoadInst *LI = dyn_cast<LoadInst>(I))
-    return LI->isAtomic() && LI->getSyncScopeID() != SyncScope::SingleThread;
-  if (StoreInst *SI = dyn_cast<StoreInst>(I))
-    return SI->isAtomic() && SI->getSyncScopeID() != SyncScope::SingleThread;
-  if (isa<AtomicRMWInst>(I))
-    return true;
-  if (isa<AtomicCmpXchgInst>(I))
-    return true;
-  if (isa<FenceInst>(I))
-    return true;
-  return false;
+  auto SSID = getAtomicSyncScopeID(I);
+  if (!SSID.hasValue())
+    return false;
+  if (isa<LoadInst>(I) || isa<StoreInst>(I))
+    return SSID.getValue() != SyncScope::SingleThread;
+  return true;
 }
 
 void ThreadSanitizer::InsertRuntimeIgnores(Function &F) {
@@ -581,11 +530,12 @@ bool ThreadSanitizer::sanitizeFunction(Function &F,
   // Traverse all instructions, collect loads/stores/returns, check for calls.
   for (auto &BB : F) {
     for (auto &Inst : BB) {
-      if (isAtomic(&Inst))
+      if (isTsanAtomic(&Inst))
         AtomicAccesses.push_back(&Inst);
       else if (isa<LoadInst>(Inst) || isa<StoreInst>(Inst))
         LocalLoadsAndStores.push_back(&Inst);
-      else if (isa<CallInst>(Inst) || isa<InvokeInst>(Inst)) {
+      else if ((isa<CallInst>(Inst) && !isa<DbgInfoIntrinsic>(Inst)) ||
+               isa<InvokeInst>(Inst)) {
         if (CallInst *CI = dyn_cast<CallInst>(&Inst))
           maybeMarkSanitizerLibraryCallNoBuiltin(CI, &TLI);
         if (isa<MemIntrinsic>(Inst))

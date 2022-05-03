@@ -132,18 +132,18 @@ define <4 x i32> @vrolw_extract_mul_with_mask(<4 x i32> %i) nounwind {
 define <32 x i16> @illegal_no_extract_mul(<32 x i16> %i) nounwind {
 ; X86-LABEL: illegal_no_extract_mul:
 ; X86:       # %bb.0:
-; X86-NEXT:    vpmullw {{\.?LCPI[0-9]+_[0-9]+}}, %zmm0, %zmm1
 ; X86-NEXT:    vpmullw {{\.?LCPI[0-9]+_[0-9]+}}, %zmm0, %zmm0
-; X86-NEXT:    vpsrlw $10, %zmm0, %zmm0
-; X86-NEXT:    vporq %zmm0, %zmm1, %zmm0
+; X86-NEXT:    vpsrlw $10, %zmm0, %zmm1
+; X86-NEXT:    vpsllw $6, %zmm0, %zmm0
+; X86-NEXT:    vporq %zmm1, %zmm0, %zmm0
 ; X86-NEXT:    retl
 ;
 ; X64-LABEL: illegal_no_extract_mul:
 ; X64:       # %bb.0:
-; X64-NEXT:    vpmullw {{\.?LCPI[0-9]+_[0-9]+}}(%rip), %zmm0, %zmm1
 ; X64-NEXT:    vpmullw {{\.?LCPI[0-9]+_[0-9]+}}(%rip), %zmm0, %zmm0
-; X64-NEXT:    vpsrlw $10, %zmm0, %zmm0
-; X64-NEXT:    vporq %zmm0, %zmm1, %zmm0
+; X64-NEXT:    vpsrlw $10, %zmm0, %zmm1
+; X64-NEXT:    vpsllw $6, %zmm0, %zmm0
+; X64-NEXT:    vporq %zmm1, %zmm0, %zmm0
 ; X64-NEXT:    retq
   %lhs_mul = mul <32 x i16> %i, <i16 640, i16 640, i16 640, i16 640, i16 640, i16 640, i16 640, i16 640, i16 640, i16 640, i16 640, i16 640, i16 640, i16 640, i16 640, i16 640, i16 640, i16 640, i16 640, i16 640, i16 640, i16 640, i16 640, i16 640, i16 640, i16 640, i16 640, i16 640, i16 640, i16 640, i16 640, i16 640>
   %rhs_mul = mul <32 x i16> %i, <i16 10, i16 10, i16 10, i16 10, i16 10, i16 10, i16 10, i16 10, i16 10, i16 10, i16 10, i16 10, i16 10, i16 10, i16 10, i16 10, i16 10, i16 10, i16 10, i16 10, i16 10, i16 10, i16 10, i16 10, i16 10, i16 10, i16 10, i16 10, i16 10, i16 10, i16 10, i16 10>
@@ -172,9 +172,9 @@ define <4 x i64> @no_extract_shl(<4 x i64> %i) nounwind {
 define <4 x i32> @no_extract_shrl(<4 x i32> %i) nounwind {
 ; CHECK-LABEL: no_extract_shrl:
 ; CHECK:       # %bb.0:
-; CHECK-NEXT:    vpbroadcastd {{.*#+}} xmm1 = [4026531840,4026531840,4026531840,4026531840]
-; CHECK-NEXT:    vpslld $25, %xmm0, %xmm2
-; CHECK-NEXT:    vpand %xmm1, %xmm2, %xmm1
+; CHECK-NEXT:    vpslld $25, %xmm0, %xmm1
+; CHECK-NEXT:    vpbroadcastd {{.*#+}} xmm2 = [4026531840,4026531840,4026531840,4026531840]
+; CHECK-NEXT:    vpand %xmm2, %xmm1, %xmm1
 ; CHECK-NEXT:    vpsrld $9, %xmm0, %xmm0
 ; CHECK-NEXT:    vpor %xmm0, %xmm1, %xmm0
 ; CHECK-NEXT:    ret{{[l|q]}}

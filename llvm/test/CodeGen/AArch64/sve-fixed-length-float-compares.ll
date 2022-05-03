@@ -367,11 +367,10 @@ define void @fcmp_ueq_v16f16(<16 x half>* %a, <16 x half>* %b, <16 x i16>* %c) #
 ; CHECK-NEXT:    ptrue p0.h, vl16
 ; CHECK-NEXT:    ld1h { z0.h }, p0/z, [x0]
 ; CHECK-NEXT:    ld1h { z1.h }, p0/z, [x1]
-; CHECK-NEXT:    mov w8, #65535
-; CHECK-NEXT:    fcmne p1.h, p0/z, z0.h, z1.h
+; CHECK-NEXT:    fcmuo p1.h, p0/z, z0.h, z1.h
+; CHECK-NEXT:    fcmeq p2.h, p0/z, z0.h, z1.h
+; CHECK-NEXT:    mov p1.b, p2/m, p2.b
 ; CHECK-NEXT:    mov z0.h, p1/z, #-1 // =0xffffffffffffffff
-; CHECK-NEXT:    mov z1.h, w8
-; CHECK-NEXT:    eor z0.d, z0.d, z1.d
 ; CHECK-NEXT:    st1h { z0.h }, p0, [x2]
 ; CHECK-NEXT:    ret
   %op1 = load <16 x half>, <16 x half>* %a
@@ -392,7 +391,9 @@ define void @fcmp_one_v16f16(<16 x half>* %a, <16 x half>* %b, <16 x i16>* %c) #
 ; CHECK-NEXT:    ptrue p0.h, vl16
 ; CHECK-NEXT:    ld1h { z0.h }, p0/z, [x0]
 ; CHECK-NEXT:    ld1h { z1.h }, p0/z, [x1]
-; CHECK-NEXT:    fcmne p1.h, p0/z, z0.h, z1.h
+; CHECK-NEXT:    fcmgt p1.h, p0/z, z1.h, z0.h
+; CHECK-NEXT:    fcmgt p2.h, p0/z, z0.h, z1.h
+; CHECK-NEXT:    mov p1.b, p2/m, p2.b
 ; CHECK-NEXT:    mov z0.h, p1/z, #-1 // =0xffffffffffffffff
 ; CHECK-NEXT:    st1h { z0.h }, p0, [x2]
 ; CHECK-NEXT:    ret
@@ -414,11 +415,8 @@ define void @fcmp_une_v16f16(<16 x half>* %a, <16 x half>* %b, <16 x i16>* %c) #
 ; CHECK-NEXT:    ptrue p0.h, vl16
 ; CHECK-NEXT:    ld1h { z0.h }, p0/z, [x0]
 ; CHECK-NEXT:    ld1h { z1.h }, p0/z, [x1]
-; CHECK-NEXT:    mov w8, #65535
-; CHECK-NEXT:    fcmeq p1.h, p0/z, z0.h, z1.h
+; CHECK-NEXT:    fcmne p1.h, p0/z, z0.h, z1.h
 ; CHECK-NEXT:    mov z0.h, p1/z, #-1 // =0xffffffffffffffff
-; CHECK-NEXT:    mov z1.h, w8
-; CHECK-NEXT:    eor z0.d, z0.d, z1.d
 ; CHECK-NEXT:    st1h { z0.h }, p0, [x2]
 ; CHECK-NEXT:    ret
   %op1 = load <16 x half>, <16 x half>* %a
@@ -461,10 +459,9 @@ define void @fcmp_ugt_v16f16(<16 x half>* %a, <16 x half>* %b, <16 x i16>* %c) #
 ; CHECK-NEXT:    ptrue p0.h, vl16
 ; CHECK-NEXT:    ld1h { z0.h }, p0/z, [x0]
 ; CHECK-NEXT:    ld1h { z1.h }, p0/z, [x1]
-; CHECK-NEXT:    mov w8, #65535
 ; CHECK-NEXT:    fcmge p1.h, p0/z, z1.h, z0.h
+; CHECK-NEXT:    mov z1.h, #-1 // =0xffffffffffffffff
 ; CHECK-NEXT:    mov z0.h, p1/z, #-1 // =0xffffffffffffffff
-; CHECK-NEXT:    mov z1.h, w8
 ; CHECK-NEXT:    eor z0.d, z0.d, z1.d
 ; CHECK-NEXT:    st1h { z0.h }, p0, [x2]
 ; CHECK-NEXT:    ret
@@ -508,10 +505,9 @@ define void @fcmp_ult_v16f16(<16 x half>* %a, <16 x half>* %b, <16 x i16>* %c) #
 ; CHECK-NEXT:    ptrue p0.h, vl16
 ; CHECK-NEXT:    ld1h { z0.h }, p0/z, [x0]
 ; CHECK-NEXT:    ld1h { z1.h }, p0/z, [x1]
-; CHECK-NEXT:    mov w8, #65535
 ; CHECK-NEXT:    fcmge p1.h, p0/z, z0.h, z1.h
+; CHECK-NEXT:    mov z1.h, #-1 // =0xffffffffffffffff
 ; CHECK-NEXT:    mov z0.h, p1/z, #-1 // =0xffffffffffffffff
-; CHECK-NEXT:    mov z1.h, w8
 ; CHECK-NEXT:    eor z0.d, z0.d, z1.d
 ; CHECK-NEXT:    st1h { z0.h }, p0, [x2]
 ; CHECK-NEXT:    ret
@@ -555,10 +551,9 @@ define void @fcmp_uge_v16f16(<16 x half>* %a, <16 x half>* %b, <16 x i16>* %c) #
 ; CHECK-NEXT:    ptrue p0.h, vl16
 ; CHECK-NEXT:    ld1h { z0.h }, p0/z, [x0]
 ; CHECK-NEXT:    ld1h { z1.h }, p0/z, [x1]
-; CHECK-NEXT:    mov w8, #65535
 ; CHECK-NEXT:    fcmgt p1.h, p0/z, z1.h, z0.h
+; CHECK-NEXT:    mov z1.h, #-1 // =0xffffffffffffffff
 ; CHECK-NEXT:    mov z0.h, p1/z, #-1 // =0xffffffffffffffff
-; CHECK-NEXT:    mov z1.h, w8
 ; CHECK-NEXT:    eor z0.d, z0.d, z1.d
 ; CHECK-NEXT:    st1h { z0.h }, p0, [x2]
 ; CHECK-NEXT:    ret
@@ -602,10 +597,9 @@ define void @fcmp_ule_v16f16(<16 x half>* %a, <16 x half>* %b, <16 x i16>* %c) #
 ; CHECK-NEXT:    ptrue p0.h, vl16
 ; CHECK-NEXT:    ld1h { z0.h }, p0/z, [x0]
 ; CHECK-NEXT:    ld1h { z1.h }, p0/z, [x1]
-; CHECK-NEXT:    mov w8, #65535
 ; CHECK-NEXT:    fcmgt p1.h, p0/z, z0.h, z1.h
+; CHECK-NEXT:    mov z1.h, #-1 // =0xffffffffffffffff
 ; CHECK-NEXT:    mov z0.h, p1/z, #-1 // =0xffffffffffffffff
-; CHECK-NEXT:    mov z1.h, w8
 ; CHECK-NEXT:    eor z0.d, z0.d, z1.d
 ; CHECK-NEXT:    st1h { z0.h }, p0, [x2]
 ; CHECK-NEXT:    ret
@@ -649,10 +643,9 @@ define void @fcmp_ord_v16f16(<16 x half>* %a, <16 x half>* %b, <16 x i16>* %c) #
 ; CHECK-NEXT:    ptrue p0.h, vl16
 ; CHECK-NEXT:    ld1h { z0.h }, p0/z, [x0]
 ; CHECK-NEXT:    ld1h { z1.h }, p0/z, [x1]
-; CHECK-NEXT:    mov w8, #65535
 ; CHECK-NEXT:    fcmuo p1.h, p0/z, z0.h, z1.h
+; CHECK-NEXT:    mov z1.h, #-1 // =0xffffffffffffffff
 ; CHECK-NEXT:    mov z0.h, p1/z, #-1 // =0xffffffffffffffff
-; CHECK-NEXT:    mov z1.h, w8
 ; CHECK-NEXT:    eor z0.d, z0.d, z1.d
 ; CHECK-NEXT:    st1h { z0.h }, p0, [x2]
 ; CHECK-NEXT:    ret
