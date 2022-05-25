@@ -795,10 +795,19 @@ unsigned DependenceInfo::mapDstLoop(const Loop *DstLoop) const {
 // Returns true if Expression is loop invariant in LoopNest.
 bool DependenceInfo::isLoopInvariant(const SCEV *Expression,
                                      const Loop *LoopNest) const {
+  // Unlike ScalarEvolution::isLoopInvariant() we consider an access outside of
+  // any loop as invariant, because we only consier expression evaluation at a
+  // specific position (where the array access takes place), and not across the
+  // entire function.
   if (!LoopNest)
     return true;
-  return SE->isLoopInvariant(Expression, LoopNest) &&
-    isLoopInvariant(Expression, LoopNest->getParentLoop());
+
+  // If the expression is invariant in the outermost loop of the loop nest, it
+  // is invariant anywhere in the loop nest.
+  const Loop *OutermostLoop = LoopNest;
+  while (OutermostLoop->getParentLoop())
+    OutermostLoop = OutermostLoop->getParentLoop();
+  return SE->isLoopInvariant(Expression, OutermostLoop);
 }
 
 
@@ -889,13 +898,25 @@ void DependenceInfo::removeMatchingExtensions(Subscript *Pair) {
   }
 }
 
-// Examine the scev and return true iff it's linear.
+// Examine the scev and return true iff it's affine.
 // Collect any loops mentioned in the set of "Loops".
 bool DependenceInfo::checkSubscript(const SCEV *Expr, const Loop *LoopNest,
                                     SmallBitVector &Loops, bool IsSrc) {
   const SCEVAddRecExpr *AddRec = dyn_cast<SCEVAddRecExpr>(Expr);
   if (!AddRec)
     return isLoopInvariant(Expr, LoopNest);
+
+  // The AddRec must depend on one of the containing loops. Otherwise,
+  // mapSrcLoop and mapDstLoop return indices outside the intended range. This
+  // can happen when a subscript in one loop references an IV from a sibling
+  // loop that could not be replaced with a concrete exit value by
+  // getSCEVAtScope.
+  const Loop *L = LoopNest;
+  while (L && AddRec->getLoop() != L)
+    L = L->getParentLoop();
+  if (!L)
+    return false;
+
   const SCEV *Start = AddRec->getStart();
   const SCEV *Step = AddRec->getStepRecurrence(*SE);
   const SCEV *UB = SE->getBackedgeTakenCount(AddRec->getLoop());
@@ -907,15 +928,6 @@ bool DependenceInfo::checkSubscript(const SCEV *Expr, const Loop *LoopNest,
     }
   }
   if (!isLoopInvariant(Step, LoopNest))
-    return false;
-
-  // If disposition for this AddRec is not invariant and not computable, then
-  // it's not linear. This can happen, for example, when a subscript in one
-  // loop references an IV from a sibiling loop.
-  using DispositionTy = ScalarEvolution::LoopDisposition;
-  DispositionTy Disposition = SE->getLoopDisposition(AddRec, LoopNest);
-  if (Disposition != DispositionTy::LoopInvariant &&
-      Disposition != DispositionTy::LoopComputable)
     return false;
 
   if (IsSrc)
