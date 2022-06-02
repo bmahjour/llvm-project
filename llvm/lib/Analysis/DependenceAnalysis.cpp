@@ -929,7 +929,6 @@ bool DependenceInfo::checkSubscript(const SCEV *Expr, const Loop *LoopNest,
   }
   if (!isLoopInvariant(Step, LoopNest))
     return false;
-
   if (IsSrc)
     Loops.set(mapSrcLoop(AddRec->getLoop()));
   else

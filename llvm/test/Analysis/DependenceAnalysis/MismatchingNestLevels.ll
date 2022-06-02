@@ -108,3 +108,65 @@ for.inc21:                                        ; preds = %for.k
 for.end23:                                        ; preds = %for.inc21
   ret void
 }
+
+
+;; void test3(int n, double *restrict A, double *restrict B) {
+;;   for (int i = 0; i < n; ++i) {
+;;     int s = 0;
+;;     for (; s * s < n * n; ++s) {
+;;     }
+;;     for (int k = 0; k < n; ++k)
+;;       A[s] = 0; // Invariant in innermost loop
+;;
+;;     A[i] = 1;
+;;   }
+;; }
+;;
+;; Make sure we can detect depnendence between A[i] and A[s] conservatively and without crashing.
+
+; CHECK-LABEL: 'Dependence Analysis' for function 'test3':
+; CHECK:       Src:  store double 0.000000e+00, ptr %arrayidx, align 8 --> Dst:  store double 1.000000e+00, ptr %arrayidx21, align 8
+; CHECK-NEXT:    da analyze - output [*|<]!
+
+define void @test3(i32 noundef %n, ptr noalias noundef %A, ptr noalias noundef %B) {
+entry:
+  br label %for.i
+
+for.i:                                         ; preds = %for.end19, %entry
+  %i.0 = phi i32 [ 0, %entry ], [ %inc23, %for.end19 ]
+  %cmp = icmp slt i32 %i.0, %n
+  br i1 %cmp, label %for.s, label %for.end24
+
+for.s:                                        ; preds = %for.i, %for.inc
+  %s.0 = phi i32 [ %inc, %for.inc ], [ 0, %for.i ]
+  %mul = mul nsw i32 %s.0, %s.0
+  %mul2 = mul nsw i32 %n, %n
+  %cmp3 = icmp slt i32 %mul, %mul2
+  br i1 %cmp3, label %for.inc, label %for.k
+
+for.inc:                                          ; preds = %for.s
+  %inc = add nsw i32 %s.0, 1
+  br label %for.s
+
+for.k:                                        ; preds = %for.s, %for.body.k
+  %k.0 = phi i32 [ %inc10, %for.body.k ], [ 0, %for.s ]
+  %cmp6 = icmp slt i32 %k.0, %n
+  br i1 %cmp6, label %for.body.k, label %for.end19
+
+for.body.k:                                        ; preds = %for.k
+  %idxprom = sext i32 %s.0 to i64
+  %arrayidx = getelementptr inbounds double, ptr %A, i64 %idxprom
+  store double 0.000000e+00, ptr %arrayidx, align 8
+  %inc10 = add nsw i32 %k.0, 1
+  br label %for.k
+
+for.end19:                                        ; preds = %for.k
+  %idxprom20 = sext i32 %i.0 to i64
+  %arrayidx21 = getelementptr inbounds double, ptr %A, i64 %idxprom20
+  store double 1.000000e+00, ptr %arrayidx21, align 8
+  %inc23 = add nsw i32 %i.0, 1
+  br label %for.i
+
+for.end24:                                        ; preds = %for.i
+  ret void
+}
