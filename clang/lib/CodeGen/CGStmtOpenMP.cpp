@@ -4481,6 +4481,40 @@ public:
 };
 } // anonymous namespace
 
+static void buildDependences(const OMPExecutableDirective &S,
+                             OMPTaskDataTy &Data) {
+
+  // First look for 'omp_all_memory' and add this first.
+  bool OmpAllMemory = false;
+  if (llvm::any_of(
+          S.getClausesOfKind<OMPDependClause>(), [](const OMPDependClause *C) {
+            return C->getDependencyKind() == OMPC_DEPEND_outallmemory ||
+                   C->getDependencyKind() == OMPC_DEPEND_inoutallmemory;
+          })) {
+    OmpAllMemory = true;
+    // Since both OMPC_DEPEND_outallmemory and OMPC_DEPEND_inoutallmemory are
+    // equivalent to the runtime, always use OMPC_DEPEND_outallmemory to
+    // simplify.
+    OMPTaskDataTy::DependData &DD =
+        Data.Dependences.emplace_back(OMPC_DEPEND_outallmemory,
+                                      /*IteratorExpr=*/nullptr);
+    // Add a nullptr Expr to simplify the codegen in emitDependData.
+    DD.DepExprs.push_back(nullptr);
+  }
+  // Add remaining dependences skipping any 'out' or 'inout' if they are
+  // overridden by 'omp_all_memory'.
+  for (const auto *C : S.getClausesOfKind<OMPDependClause>()) {
+    OpenMPDependClauseKind Kind = C->getDependencyKind();
+    if (Kind == OMPC_DEPEND_outallmemory || Kind == OMPC_DEPEND_inoutallmemory)
+      continue;
+    if (OmpAllMemory && (Kind == OMPC_DEPEND_out || Kind == OMPC_DEPEND_inout))
+      continue;
+    OMPTaskDataTy::DependData &DD =
+        Data.Dependences.emplace_back(C->getDependencyKind(), C->getModifier());
+    DD.DepExprs.append(C->varlist_begin(), C->varlist_end());
+  }
+}
+
 void CodeGenFunction::EmitOMPTaskBasedDirective(
     const OMPExecutableDirective &S, const OpenMPDirectiveKind CapturedRegion,
     const RegionCodeGenTy &BodyGen, const TaskGenTy &TaskGen,
@@ -4576,11 +4610,7 @@ void CodeGenFunction::EmitOMPTaskBasedDirective(
   Data.Reductions = CGM.getOpenMPRuntime().emitTaskReductionInit(
       *this, S.getBeginLoc(), LHSs, RHSs, Data);
   // Build list of dependences.
-  for (const auto *C : S.getClausesOfKind<OMPDependClause>()) {
-    OMPTaskDataTy::DependData &DD =
-        Data.Dependences.emplace_back(C->getDependencyKind(), C->getModifier());
-    DD.DepExprs.append(C->varlist_begin(), C->varlist_end());
-  }
+  buildDependences(S, Data);
   // Get list of local vars for untied tasks.
   if (!Data.Tied) {
     CheckVarsEscapingUntiedTaskDeclContext Checker;
@@ -4950,12 +4980,7 @@ void CodeGenFunction::EmitOMPTargetTaskBasedDirective(
     }
   }
   (void)TargetScope.Privatize();
-  // Build list of dependences.
-  for (const auto *C : S.getClausesOfKind<OMPDependClause>()) {
-    OMPTaskDataTy::DependData &DD =
-        Data.Dependences.emplace_back(C->getDependencyKind(), C->getModifier());
-    DD.DepExprs.append(C->varlist_begin(), C->varlist_end());
-  }
+  buildDependences(S, Data);
   auto &&CodeGen = [&Data, &S, CS, &BodyGen, BPVD, PVD, SVD, MVD,
                     &InputInfo](CodeGenFunction &CGF, PrePostActionTy &Action) {
     // Set proper addresses for generated private copies.
@@ -5070,11 +5095,7 @@ void CodeGenFunction::EmitOMPBarrierDirective(const OMPBarrierDirective &S) {
 void CodeGenFunction::EmitOMPTaskwaitDirective(const OMPTaskwaitDirective &S) {
   OMPTaskDataTy Data;
   // Build list of dependences
-  for (const auto *C : S.getClausesOfKind<OMPDependClause>()) {
-    OMPTaskDataTy::DependData &DD =
-        Data.Dependences.emplace_back(C->getDependencyKind(), C->getModifier());
-    DD.DepExprs.append(C->varlist_begin(), C->varlist_end());
-  }
+  buildDependences(S, Data);
   CGM.getOpenMPRuntime().emitTaskwaitCall(*this, S.getBeginLoc(), Data);
 }
 
@@ -5838,25 +5859,38 @@ static std::pair<bool, RValue> emitOMPAtomicRMW(CodeGenFunction &CGF, LValue X,
   // Allow atomicrmw only if 'x' and 'update' are integer values, lvalue for 'x'
   // expression is simple and atomic is allowed for the given type for the
   // target platform.
-  if (BO == BO_Comma || !Update.isScalar() ||
-      !Update.getScalarVal()->getType()->isIntegerTy() || !X.isSimple() ||
+  if (BO == BO_Comma || !Update.isScalar() || !X.isSimple() ||
       (!isa<llvm::ConstantInt>(Update.getScalarVal()) &&
        (Update.getScalarVal()->getType() !=
         X.getAddress(CGF).getElementType())) ||
-      !X.getAddress(CGF).getElementType()->isIntegerTy() ||
       !Context.getTargetInfo().hasBuiltinAtomic(
           Context.getTypeSize(X.getType()), Context.toBits(X.getAlignment())))
     return std::make_pair(false, RValue::get(nullptr));
 
+  auto &&CheckAtomicSupport = [&CGF](llvm::Type *T, BinaryOperatorKind BO) {
+    if (T->isIntegerTy())
+      return true;
+
+    if (T->isFloatingPointTy() && (BO == BO_Add || BO == BO_Sub))
+      return llvm::isPowerOf2_64(CGF.CGM.getDataLayout().getTypeStoreSize(T));
+
+    return false;
+  };
+
+  if (!CheckAtomicSupport(Update.getScalarVal()->getType(), BO) ||
+      !CheckAtomicSupport(X.getAddress(CGF).getElementType(), BO))
+    return std::make_pair(false, RValue::get(nullptr));
+
+  bool IsInteger = X.getAddress(CGF).getElementType()->isIntegerTy();
   llvm::AtomicRMWInst::BinOp RMWOp;
   switch (BO) {
   case BO_Add:
-    RMWOp = llvm::AtomicRMWInst::Add;
+    RMWOp = IsInteger ? llvm::AtomicRMWInst::Add : llvm::AtomicRMWInst::FAdd;
     break;
   case BO_Sub:
     if (!IsXLHSInRHSPart)
       return std::make_pair(false, RValue::get(nullptr));
-    RMWOp = llvm::AtomicRMWInst::Sub;
+    RMWOp = IsInteger ? llvm::AtomicRMWInst::Sub : llvm::AtomicRMWInst::FSub;
     break;
   case BO_And:
     RMWOp = llvm::AtomicRMWInst::And;
@@ -5914,9 +5948,13 @@ static std::pair<bool, RValue> emitOMPAtomicRMW(CodeGenFunction &CGF, LValue X,
   }
   llvm::Value *UpdateVal = Update.getScalarVal();
   if (auto *IC = dyn_cast<llvm::ConstantInt>(UpdateVal)) {
-    UpdateVal = CGF.Builder.CreateIntCast(
-        IC, X.getAddress(CGF).getElementType(),
-        X.getType()->hasSignedIntegerRepresentation());
+    if (IsInteger)
+      UpdateVal = CGF.Builder.CreateIntCast(
+          IC, X.getAddress(CGF).getElementType(),
+          X.getType()->hasSignedIntegerRepresentation());
+    else
+      UpdateVal = CGF.Builder.CreateCast(llvm::Instruction::CastOps::UIToFP, IC,
+                                         X.getAddress(CGF).getElementType());
   }
   llvm::Value *Res =
       CGF.Builder.CreateAtomicRMW(RMWOp, X.getPointer(CGF), UpdateVal, AO);
@@ -6150,11 +6188,13 @@ static void emitOMPAtomicCompareExpr(CodeGenFunction &CGF,
 
   llvm::OpenMPIRBuilder::AtomicOpValue XOpVal{
       XAddr.getPointer(), XAddr.getElementType(),
-      X->getType().isVolatileQualified(),
-      X->getType()->hasSignedIntegerRepresentation()};
+      X->getType()->hasSignedIntegerRepresentation(),
+      X->getType().isVolatileQualified()};
+  llvm::OpenMPIRBuilder::AtomicOpValue VOpVal, ROpVal;
 
   CGF.Builder.restoreIP(OMPBuilder.createAtomicCompare(
-      CGF.Builder, XOpVal, EVal, DVal, AO, Op, IsXBinopExpr));
+      CGF.Builder, XOpVal, VOpVal, ROpVal, EVal, DVal, AO, Op, IsXBinopExpr,
+      /* IsPostfixUpdate */ false, /* IsFailOnly */ false));
 }
 
 static void emitOMPAtomicExpr(CodeGenFunction &CGF, OpenMPClauseKind Kind,

@@ -38,6 +38,7 @@
 #include "llvm/Support/WithColor.h"
 #include "llvm/Support/raw_ostream.h"
 #include <algorithm>
+#include <queue>
 
 using namespace llvm;
 
@@ -994,7 +995,7 @@ static int merge_main(int argc, const char *argv[]) {
       "zero-counter-threshold", cl::init(0.7), cl::Hidden,
       cl::desc("For the function which is cold in instr profile but hot in "
                "sample profile, if the ratio of the number of zero counters "
-               "divided by the the total number of counters is above the "
+               "divided by the total number of counters is above the "
                "threshold, the profile of the function will be regarded as "
                "being harmful for performance and will be dropped."));
   cl::opt<unsigned> SupplMinSizeThreshold(
@@ -2531,8 +2532,8 @@ static int showSampleProfile(const std::string &Filename, bool ShowCounts,
 static int showMemProfProfile(const std::string &Filename,
                               const std::string &ProfiledBinary,
                               raw_fd_ostream &OS) {
-  auto ReaderOr =
-      llvm::memprof::RawMemProfReader::create(Filename, ProfiledBinary);
+  auto ReaderOr = llvm::memprof::RawMemProfReader::create(
+      Filename, ProfiledBinary, /*KeepNames=*/true);
   if (Error E = ReaderOr.takeError())
     // Since the error can be related to the profile or the binary we do not
     // pass whence. Instead additional context is provided where necessary in

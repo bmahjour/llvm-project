@@ -910,6 +910,20 @@ TEST_P(ImportDecl, ImportUsingEnumDecl) {
              functionDecl(hasDescendant(usingEnumDecl(hasName("bar")))));
 }
 
+const internal::VariadicDynCastAllOfMatcher<Decl, UsingPackDecl> usingPackDecl;
+
+TEST_P(ImportDecl, ImportUsingPackDecl) {
+  MatchVerifier<Decl> Verifier;
+  testImport(
+      "struct A { int operator()() { return 1; } };"
+      "struct B { int operator()() { return 2; } };"
+      "template<typename ...T> struct C : T... { using T::operator()...; };"
+      "C<A, B> declToImport;",
+      Lang_CXX20, "", Lang_CXX20, Verifier,
+      varDecl(hasType(templateSpecializationType(hasDeclaration(
+          classTemplateSpecializationDecl(hasDescendant(usingPackDecl())))))));
+}
+
 /// \brief Matches shadow declarations introduced into a scope by a
 ///        (resolved) using declaration.
 ///
@@ -1020,6 +1034,31 @@ TEST_P(ImportExpr, DependentSizedArrayType) {
              Lang_CXX03, "", Lang_CXX03, Verifier,
              classTemplateDecl(has(cxxRecordDecl(
                  has(fieldDecl(hasType(dependentSizedArrayType())))))));
+}
+
+TEST_P(ASTImporterOptionSpecificTestBase, ImportUsingPackDecl) {
+  Decl *FromTU = getTuDecl(
+      "struct A { int operator()() { return 1; } };"
+      "struct B { int operator()() { return 2; } };"
+      "template<typename ...T> struct C : T... { using T::operator()...; };"
+      "C<A, B> Var;",
+      Lang_CXX20);
+
+  auto From = FirstDeclMatcher<UsingPackDecl>().match(FromTU, usingPackDecl());
+  ASSERT_TRUE(From);
+  auto To = cast<UsingPackDecl>(Import(From, Lang_CXX20));
+  ASSERT_TRUE(To);
+
+  ArrayRef<NamedDecl *> FromExpansions = From->expansions();
+  ArrayRef<NamedDecl *> ToExpansions = To->expansions();
+  ASSERT_EQ(FromExpansions.size(), ToExpansions.size());
+  for (unsigned int I = 0; I < FromExpansions.size(); ++I) {
+    auto ImportedExpansion = Import(FromExpansions[I], Lang_CXX20);
+    EXPECT_EQ(ImportedExpansion, ToExpansions[I]);
+  }
+
+  auto ImportedDC = cast<Decl>(Import(From->getDeclContext(), Lang_CXX20));
+  EXPECT_EQ(ImportedDC, cast<Decl>(To->getDeclContext()));
 }
 
 TEST_P(ASTImporterOptionSpecificTestBase, TemplateTypeParmDeclNoDefaultArg) {
@@ -2658,10 +2697,7 @@ TEST_P(ImportFriendFunctions, Lookup) {
       getTuDecl("struct X { friend void f(); };", Lang_CXX03, "input0.cc");
   auto *FromD = FirstDeclMatcher<FunctionDecl>().match(FromTU, FunctionPattern);
   ASSERT_TRUE(FromD->isInIdentifierNamespace(Decl::IDNS_OrdinaryFriend));
-  // Before CXX20, MSVC treats friend function declarations as function
-  // declarations
-  ASSERT_EQ(FromTU->getLangOpts().MSVCCompat,
-            FromD->isInIdentifierNamespace(Decl::IDNS_Ordinary));
+  ASSERT_FALSE(FromD->isInIdentifierNamespace(Decl::IDNS_Ordinary));
   {
     auto FromName = FromD->getDeclName();
     auto *Class = FirstDeclMatcher<CXXRecordDecl>().match(FromTU, ClassPattern);
@@ -2705,10 +2741,7 @@ TEST_P(ImportFriendFunctions, LookupWithProtoAfter) {
   auto *FromNormal =
       LastDeclMatcher<FunctionDecl>().match(FromTU, FunctionPattern);
   ASSERT_TRUE(FromFriend->isInIdentifierNamespace(Decl::IDNS_OrdinaryFriend));
-  // Before CXX20, MSVC treats friend function declarations as function
-  // declarations
-  ASSERT_EQ(FromTU->getLangOpts().MSVCCompat,
-            FromFriend->isInIdentifierNamespace(Decl::IDNS_Ordinary));
+  ASSERT_FALSE(FromFriend->isInIdentifierNamespace(Decl::IDNS_Ordinary));
   ASSERT_FALSE(FromNormal->isInIdentifierNamespace(Decl::IDNS_OrdinaryFriend));
   ASSERT_TRUE(FromNormal->isInIdentifierNamespace(Decl::IDNS_Ordinary));
 
@@ -2799,10 +2832,7 @@ TEST_P(ImportFriendFunctions, ImportFriendChangesLookup) {
 
   ASSERT_TRUE(FromNormalF->isInIdentifierNamespace(Decl::IDNS_Ordinary));
   ASSERT_FALSE(FromNormalF->isInIdentifierNamespace(Decl::IDNS_OrdinaryFriend));
-  // Before CXX20, MSVC treats friend function declarations as function
-  // declarations
-  ASSERT_EQ(FromFriendTU->getLangOpts().MSVCCompat,
-            FromFriendF->isInIdentifierNamespace(Decl::IDNS_Ordinary));
+  ASSERT_FALSE(FromFriendF->isInIdentifierNamespace(Decl::IDNS_Ordinary));
   ASSERT_TRUE(FromFriendF->isInIdentifierNamespace(Decl::IDNS_OrdinaryFriend));
   auto LookupRes = FromNormalTU->noload_lookup(FromNormalName);
   ASSERT_TRUE(LookupRes.isSingleResult());
@@ -4288,6 +4318,10 @@ TEST_P(DeclContextTest,
   // This asserts in the old implementation.
   DC->removeDecl(A0);
   EXPECT_FALSE(DC->containsDecl(A0));
+
+  // Make sure we do not leave a StoredDeclsList with no entries.
+  DC->removeDecl(A1);
+  ASSERT_EQ(Map->find(A1->getDeclName()), Map->end());
 }
 
 struct ImportFunctionTemplateSpecializations
@@ -7705,6 +7739,38 @@ TEST_P(ASTImporterOptionSpecificTestBase,
   auto *ToF = Import(FromF, Lang_CXX11);
   EXPECT_TRUE(ToF);
   EXPECT_TRUE(ToX->getInClassInitializer());
+}
+
+TEST_P(ASTImporterOptionSpecificTestBase, isNewDecl) {
+  Decl *FromTU = getTuDecl(
+      R"(
+      int bar() {
+        return 0;
+      }
+      void other() {
+        bar();
+      }
+      )",
+      Lang_CXX11);
+  Decl *ToTU = getToTuDecl(
+      R"(
+      int bar() {
+        return 0;
+      }
+      )",
+      Lang_CXX11);
+  auto *FromOther = FirstDeclMatcher<FunctionDecl>().match(
+      FromTU, functionDecl(hasName("other")));
+  ASSERT_TRUE(FromOther);
+
+  auto *ToOther = Import(FromOther, Lang_CXX11);
+  ASSERT_TRUE(ToOther);
+
+  auto *ToBar = FirstDeclMatcher<FunctionDecl>().match(
+      ToTU, functionDecl(hasName("bar")));
+
+  EXPECT_TRUE(SharedStatePtr->isNewDecl(ToOther));
+  EXPECT_FALSE(SharedStatePtr->isNewDecl(ToBar));
 }
 
 INSTANTIATE_TEST_SUITE_P(ParameterizedTests, ASTImporterLookupTableTest,
