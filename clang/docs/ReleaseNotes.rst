@@ -160,6 +160,14 @@ Bug Fixes
   conditions it would be allowed for a const object elsewhere.
 - ``__has_unique_object_representations`` no longer reports that ``_BitInt`` types
   have unique object representations if they have padding bits.
+- Unscoped and scoped enumeration types can no longer be initialized from a
+  brace-init-list containing a single element of a different scoped enumeration
+  type.
+- Allow use of an elaborated type specifier as a ``_Generic`` selection
+  association in C++ mode. This fixes
+  `Issue 55562 <https://github.com/llvm/llvm-project/issues/55562>`_.
+- Clang will allow calling a ``consteval`` function in a default argument. This
+  fixes `Issue 48230 <https://github.com/llvm/llvm-project/issues/48230>`_.
 
 Improvements to Clang's diagnostics
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -333,6 +341,9 @@ Attribute Changes in Clang
   builtins (corresponding to the specific names listed in the attribute) in the
   body of the function the attribute is on.
 
+- When the ``weak`` attribute is applied to a const qualified variable clang no longer
+  tells the backend it is allowed to optimize based on initializer value.
+
 Windows Support
 ---------------
 
@@ -341,6 +352,11 @@ Windows Support
   turned on. With this addition, clang-cl can be used in Visual Studio for the
   JustMyCode feature. Note, you may need to manually add ``/JMC`` as additional
   compile options in the Visual Studio since it currently assumes clang-cl does not support ``/JMC``.
+
+- Implemented generation of SEH unwind information on ARM. (C++ exception
+  handling in MSVC mode is still unimplemented though.)
+
+- Switched MinGW mode on ARM to use SEH instead of DWARF for unwind information.
 
 AIX Support
 -----------
